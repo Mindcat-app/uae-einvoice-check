@@ -13,7 +13,7 @@ ENGINE = ROOT / "engine" / "check_uae.py"
 CLEAN = {"invoice_number": "INV-1", "issue_date": "2026-10-01", "type_code": "380", "currency": "AED",
          "seller_trn": "100000000000003", "seller_name": "Seller LLC", "seller_country": "AE", "seller_emirate": "DXB",
          "buyer_name": "Buyer LLC", "buyer_trn": "100000000000103", "buyer_country": "AE", "buyer_emirate": "AUH",
-         "line_id": "1", "item_name": "Day", "item_kind": "service", "sac_code": "998311", "quantity": "2",
+         "line_id": "1", "item_name": "Day", "item_kind": "service", "sac_code": "998311", "quantity": "2", "unit_code": "DAY",
          "unit_price": "100", "line_net": "200", "vat_category": "S", "vat_rate": "5", "line_vat": "10"}
 
 
@@ -32,12 +32,12 @@ def run(rows=None, text=None, args=()):
 
 def rules(**change):
     code, out = run([{**CLEAN, **change}])
-    return {g["rule"] for g in out["gaps"]} if out else {f"exit-{code}"}
+    return sorted({g["rule"]: 1 for g in out["gaps"]}) if out else [f"exit-{code}"]
 
 
 class CheckUae(unittest.TestCase):
     def test_clean_line_passes(self):
-        self.assertEqual(rules(), set())
+        self.assertEqual(rules(), [])
 
     def test_trn_format(self):
         self.assertIn("ibr-132-ae", rules(seller_trn="10000000000003"))
@@ -57,35 +57,85 @@ class CheckUae(unittest.TestCase):
         self.assertIn("ibr-122-ae", rules(type_code="480"))
         self.assertIn("ibr-055-ae", rules(type_code="381"))
         self.assertNotIn("ibr-055-ae", rules(type_code="381", preceding_invoice="INV-0"))
+        self.assertIn("ibr-158-ae", rules(type_code="381", preceding_invoice="INV-0"))
+        self.assertEqual(rules(type_code="381", preceding_invoice="INV-0", credit_reason="DL8.61.1.A"), [])
+        self.assertIn("ibr-001-ae", rules(type_code="381", preceding_invoice="INV-0", credit_reason="refund"))
 
     def test_discount_and_base_quantity(self):
-        self.assertEqual(rules(line_allowance="20", line_net="180", line_vat="9"), set())
-        self.assertEqual(rules(quantity="20", unit_price="100", base_quantity="10", line_net="200"), set())
+        self.assertEqual(rules(line_allowance="20", line_net="180", line_vat="9"), [])
+        self.assertEqual(rules(quantity="20", unit_price="100", base_quantity="10", line_net="200"), [])
         self.assertIn("mc-base-quantity", rules(base_quantity="0"))
 
     def test_categories(self):
         self.assertIn("ibr-167-ae", rules(vat_category="E", vat_rate="", line_vat=""))
-        self.assertEqual(rules(vat_category="E", vat_rate="", line_vat="", exemption_reason="VATEX-AE-EXEMPT"), set())
+        self.assertEqual(rules(vat_category="E", vat_rate="", line_vat="", exemption_reason="VATEX-AE-EXEMPT"), [])
         self.assertIn("aligned-ibrp-o-05", rules(vat_category="O", vat_rate="0", line_vat=""))
-        self.assertEqual(rules(vat_category="O", vat_rate="", line_vat=""), set())
+        self.assertEqual(rules(vat_category="O", vat_rate="", line_vat=""), [])
         self.assertIn("ibr-111-ae", rules(vat_category="N", vat_rate="0", line_vat="0"))
         self.assertIn("ibr-139-ae", rules(vat_category="s"))
 
     def test_reverse_charge(self):
-        self.assertEqual(rules(vat_category="AE", vat_rate="5", line_vat="0"), set())
+        # PINT AE 1.0.4: aligned-ibrp-ae-05-ae only requires a line rate; the official AE example uses 5.
+        self.assertEqual(rules(vat_category="AE", vat_rate="5", line_vat="0"), [])
         self.assertIn("ibr-103-ae", rules(vat_category="AE", vat_rate="5", line_vat="0", buyer_trn=""))
+        self.assertIn("aligned-ibrp-ae-05-ae", rules(vat_category="AE", vat_rate="", line_vat="0"))
 
     def test_foreign_buyer_not_held_to_uae_rules(self):
-        self.assertEqual(rules(buyer_country="GB", buyer_trn="GB123456789", buyer_emirate="London"), set())
+        self.assertEqual(rules(buyer_country="GB", buyer_trn="GB123456789", buyer_emirate="London"), [])
 
     def test_foreign_currency(self):
         r = rules(currency="USD")
         self.assertIn("ibr-159-ae", r)
         self.assertIn("ibr-104-ae", r)
+        self.assertEqual(rules(currency="USD", exchange_rate="3.6725", line_net_aed="734.50"), [])
+        self.assertIn("mc-aed-maths", rules(currency="USD", exchange_rate="3.6725", line_net_aed="200"))
+
+    def test_issue_date(self):
+        for bad in ("01/10/2026", "2026-02-30", "2026-1-5", "20261001"):
+            self.assertIn("mc-date-format", rules(issue_date=bad))
+
+    def test_unit_code(self):
+        self.assertIn("ibr-023", rules(unit_code=""))
+        self.assertIn("ibr-cl-23", rules(unit_code="day"))
+        self.assertIn("ibr-cl-23", rules(unit_code="hours"))
+        self.assertEqual(rules(unit_code="HUR"), [])
+
+    def test_item_codes(self):
+        self.assertIn("ibr-184-ae", rules(item_kind="goods", sac_code=""))
+        self.assertIn("ibr-185-ae", rules(sac_code=""))
+        self.assertIn("ibr-186-ae", rules(item_kind="both"))
+
+    def test_bad_base_quantity_is_reported_not_crashed(self):
+        code, out = run([{**CLEAN, "base_quantity": "1x"}])
+        self.assertEqual(code, 1)
+        self.assertIn("mc-number-format", [g["rule"] for g in out["gaps"]])
+
+    def test_header_gaps_once_per_invoice(self):
+        code, out = run([{**CLEAN, "line_id": str(i), "seller_trn": "1"} for i in range(1, 11)])
+        self.assertEqual([g["rule"] for g in out["gaps"]].count("ibr-132-ae"), 1)
+
+    def test_lines_that_disagree_on_header(self):
+        code, out = run([CLEAN, {**CLEAN, "line_id": "2", "currency": "USD", "exchange_rate": "3.6725", "line_net_aed": "734.50"}])
+        self.assertIn(("currency", "mc-header-mismatch"), [(g["field"], g["rule"]) for g in out["gaps"]])
+        # Two different invoices that share one number
+        code, out = run([CLEAN, {**CLEAN, "seller_name": "Other LLC", "issue_date": "2026-10-05"}])
+        self.assertEqual(sorted(g["field"] for g in out["gaps"] if g["rule"] == "mc-header-mismatch"), ["issue_date", "seller_name"])
+
+    def test_coverage_and_warnings(self):
+        code, out = run([CLEAN, {**CLEAN, "invoice_number": "INV-2", "buyer_trn": ""}])
+        self.assertEqual(code, 0)
+        c = out["coverage"]
+        self.assertEqual((c["invoices_by_type_code"], c["lines_by_vat_category"], c["invoices_by_currency"]),
+                         ({"380": 2}, {"S": 2}, {"AED": 2}))
+        self.assertEqual(c["not_in_sample"], ["credit note (381)", "zero-rated (Z)", "exempt (E)", "reverse charge (AE)", "non-AED currency"])
+        self.assertEqual([(w["invoice"], w["rule"]) for w in out["warnings"]], [("INV-2", "mc-buyer-trn-blank")])
 
     def test_empty_and_header_only_files_fail_loudly(self):
         self.assertEqual(run(text="")[0], 2)
         self.assertEqual(run(text="invoice_number,line_id\n")[0], 2)
+
+    def test_duplicate_headers_fail_loudly(self):
+        self.assertEqual(run(text="Invoice_Number,invoice_number\nINV-1,INV-2\n")[0], 2)
 
     def test_headers_are_normalised(self):
         code, out = run(text="Invoice_Number , LINE_ID\nINV-1,1\n")

@@ -1,6 +1,6 @@
 # mindcat-einvoice-check
 
-Checks UAE invoice data from Salesforce or an ERP CSV export against the PINT AE e-invoicing rules and lists the gaps per invoice: missing fields, TRN and TIN format, emirate codes, VAT categories and rates, VAT and line maths, credit-note references and foreign-currency fields. **It never signs, sends or submits invoices, and it is not tax advice.** Saudi (ZATCA) checks are planned and not built yet.
+Checks UAE invoice data from Salesforce or an ERP CSV export against the PINT AE e-invoicing rules and lists the gaps per invoice: missing fields, dates, TRN and TIN format, emirate codes, VAT categories and rates, VAT and line maths, units of measure, item codes, credit-note references and reasons, and foreign-currency fields. **It never signs, sends or submits invoices, and it is not tax advice.** Saudi (ZATCA) checks are planned and not built yet.
 
 ## Who it is for
 UAE finance teams in the second wave (revenue under AED 50m: appoint an accredited service provider by 31 Mar 2027, live 1 Jul 2027), and first-wave teams whose data isn't clean.
@@ -23,7 +23,25 @@ The invoice data you check (customer names, TRNs, addresses, amounts) is read on
 Needs Python 3 (standard library only).
 
 ## Rules
-Checks marked `ibr-...-ae` mirror rules in the official PINT AE v1.0.4 Schematron (https://docs.peppol.eu/poac/ae/pint-ae/resources.zip). Checks marked `mc-` are Mindcat data checks. This is a pre-check on source data; the provider still validates the final XML.
+Checks marked `ibr-...` or `aligned-...` mirror rules in the official PINT AE v1.0.4 Schematron (https://docs.peppol.eu/poac/ae/pint-ae/resources.zip). Checks marked `mc-` are Mindcat data checks. `ibr-cl-23` checks the shape of the unit code (2 or 3 capital letters or digits), not the full UN/ECE list. This is a pre-check on source data; the provider still validates the final XML.
+
+## CSV columns
+One row per invoice line. Header names ignore case and surrounding spaces; a column that appears twice stops the check.
+
+| Column | What |
+| --- | --- |
+| `invoice_number`, `issue_date`, `type_code`, `currency`, `exchange_rate` | Invoice header. `issue_date` is `YYYY-MM-DD`. `type_code` is 380 or 480 (invoice), 381 or 81 (credit note). `exchange_rate` is AED per 1 unit of the invoice currency (for USD, about 3.6725) |
+| `seller_name`, `seller_trn`, `seller_tin`, `seller_country`, `seller_emirate` | Seller. Emirate is AUH, DXB, SHJ, UAQ, FUJ, AJM or RAK |
+| `buyer_name`, `buyer_trn`, `buyer_country`, `buyer_emirate` | Buyer |
+| `preceding_invoice`, `credit_reason` | Credit notes: the original invoice number and the reason code (DL8.61.1.A to DL8.61.1.E, or VD) |
+| `line_id`, `item_name`, `item_kind`, `hs_code`, `sac_code` | Line and item. `item_kind` is goods, service or both |
+| `quantity`, `unit_code`, `unit_price`, `base_quantity`, `line_allowance`, `line_charge`, `line_net`, `line_net_aed` | Amounts. `unit_code` is a UN/ECE Rec 20 code in capitals, such as EA, HUR, DAY, MON or KGM. `line_net_aed` is `line_net` x `exchange_rate` |
+| `vat_category`, `vat_rate`, `line_vat`, `exemption_reason` | VAT. Category is S, Z, E, O, AE or N |
+
+Invoice-level columns must be the same on every line of an invoice; a gap in one is reported once per invoice. Numbers are plain digits and a dot. Save the file as UTF-8; other files are read as Arabic Windows (cp1256), and the output names the encoding used.
+
+## Output
+JSON with the gaps (grouped in `by_rule`), `coverage` (invoices by type and currency, lines by VAT category, and `not_in_sample`: common cases such as credit notes, zero-rated, exempt, reverse charge or foreign currency that the sample has none of) and `warnings`, which are worth a look but are not counted as gaps. Exit 0 means no gaps, 1 gaps, 2 the file could not be checked.
 
 ## Layout
 | Path | What |
