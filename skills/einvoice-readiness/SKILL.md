@@ -9,7 +9,7 @@ allowed-tools: Read, Glob, Grep, Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/engine/c
 This plugin checks data. It never signs, sends or submits an invoice, and it is not tax advice. Saudi (ZATCA) checks are not built yet: say so if asked.
 
 ## 1. Dates
-Ask the UAE revenue band, then give the dates that apply and their source: Ministerial Decision 244 of 2025 as amended by Ministerial Resolution 66 of 2026.
+Ask the UAE revenue band, then give the dates that apply and their source: Ministerial Decision 244 of 2025 as amended by Ministerial Resolution No. 66 of 2026.
 
 | Group | Appoint an ASP by | Live from |
 | --- | --- | --- |
@@ -25,7 +25,7 @@ Do not state penalty amounts: the penalty decision is being replaced and the new
 ## 3. Check
 Use Read to look at files, not shell commands. Then run the check as one plain command, with no `cd` or other commands chained to it:
 `python3 -I "${CLAUDE_PLUGIN_ROOT}/engine/check_uae.py" <file.csv>`
-Exit 0 means no gaps, 1 means gaps, 2 means the file could not be checked (say why, from the message). If `truncated` is true, rerun with `--all` before writing totals. Add `--mask` if the user does not want full TRNs shown. `--summary` prints a short text version instead of JSON.
+Exit 0 means no gaps, 1 means gaps, 2 means the file could not be checked (say why, from the message). If `truncated` or `warnings_truncated` is true, rerun with `--all` before writing totals. Add `--mask` if the user does not want full TRNs shown. `--summary` prints a short text version instead of JSON.
 
 ## 4. Write the gap list
 Group by rule using `by_rule`, most common first. For each: the rule in plain words, how many invoices fail (the `invoices` count), one example (field and value), the fix, and who owns it (finance, sales ops or the Salesforce admin). Rules starting `ibr-` or `aligned-` come from the official PINT AE rules; rules starting `mc-` are Mindcat's data checks. Note that this checks source data, not the final XML your provider sends.

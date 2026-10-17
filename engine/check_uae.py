@@ -41,6 +41,12 @@ NUMERIC = ["quantity", "unit_price", "base_quantity", "line_allowance", "line_ch
 HEADER = ["issue_date", "type_code", "currency", "exchange_rate", "seller_trn", "seller_tin",
           "seller_name", "seller_country", "seller_emirate", "buyer_name", "buyer_trn", "buyer_country",
           "buyer_emirate", "preceding_invoice", "credit_reason", "invoice_total_net", "invoice_total_vat"]
+NUMERIC_HEADER = ["exchange_rate", "invoice_total_net", "invoice_total_vat"]
+CODE_HEADER = ["type_code", "currency", "seller_country", "seller_emirate", "buyer_country", "buyer_emirate",
+               "credit_reason"]
+FLAGS = ["--all", "--summary", "--mask"]
+BOM = b"\xef\xbb\xbf"
+PREFIX = 65536
 TAX_IDS = ["seller_trn", "seller_tin", "buyer_trn"]
 # Fields that tell two different invoices apart when they share one invoice number.
 IDENTITY = ["seller_trn", "seller_tin", "seller_name", "issue_date"]
@@ -61,6 +67,11 @@ def dec(v):
     return d if d.is_finite() else None
 
 
+def make_item(invoice, line, field, value, rule, fix):
+    """One gap or warning, in the shape the JSON output uses."""
+    return {"invoice": invoice, "line": line, "field": field, "value": value, "rule": rule, "fix": fix}
+
+
 def invoice_key(r):
     return (r.get("invoice_number") or "").strip() or f"(row {r['_row']})"
 
@@ -70,8 +81,7 @@ def check_row(r):
     gaps, warnings = [], []
 
     def item(field, rule, fix):
-        return {"invoice": invoice_key(r), "line": r.get("line_id", ""),
-                "field": field, "value": r.get(field, ""), "rule": rule, "fix": fix}
+        return make_item(invoice_key(r), r.get("line_id", ""), field, r.get(field, ""), rule, fix)
 
     def gap(field, rule, fix):
         gaps.append(item(field, rule, fix))
@@ -147,7 +157,7 @@ def check_row(r):
     if cat == "AE":
         if not get("buyer_trn"):
             gap("buyer_trn", "ibr-103-ae", "Reverse-charge (AE) lines need the buyer's TRN")
-        if rate != 0:
+        if not get("vat_rate") or (rate is not None and rate != 0):
             gap("vat_rate", "aligned-ibrp-ae-05", "Reverse-charge (AE) lines must have VAT rate 0")
         if vat not in (None, Decimal(0)):
             gap("line_vat", "mc-reverse-charge-vat", "Reverse-charge lines carry 0 VAT; the buyer accounts for it")
@@ -159,8 +169,9 @@ def check_row(r):
     base = dec(get("base_quantity")) if get("base_quantity") else Decimal(1)
     if base is not None and base <= 0:
         gap("base_quantity", "mc-base-quantity", "Base quantity must be more than 0; leave it empty for 1")
-    allow, charge = dec(get("line_allowance")) or Decimal(0), dec(get("line_charge")) or Decimal(0)
-    if None not in (q, p, net, base) and base > 0:
+    allow = dec(get("line_allowance")) if get("line_allowance") else Decimal(0)
+    charge = dec(get("line_charge")) if get("line_charge") else Decimal(0)
+    if None not in (q, p, net, base, allow, charge) and base > 0:
         want = q * (p / base) + charge - allow
         if abs(want - net) > Decimal("0.01"):
             gap("line_net", "ibr-147-ae", f"quantity x price / base quantity + charges - allowances = {want:.2f}, not {net}")
@@ -221,33 +232,55 @@ def group_lines(rows):
     return groups
 
 
+def header_values(lines, field):
+    """Distinct non-blank values of a header field across lines, as {compare key: first raw value}.
+    Many ERPs fill header fields on the first line only, so blanks are ignored. Numbers compare
+    by value (3.6725 = 3.67250); codes compare without case."""
+    out = {}
+    for r in lines:
+        raw = (r.get(field) or "").strip()
+        if not raw:
+            continue
+        if field in NUMERIC_HEADER and dec(raw) is not None:
+            key = str(dec(raw).normalize())
+        elif field in CODE_HEADER:
+            key = raw.upper()
+        else:
+            key = raw
+        out.setdefault(key, raw)
+    return out
+
+
 def check_invoices(groups, columns):
-    """Checks across the lines of one invoice: header fields that disagree, and optional totals."""
+    """Checks across the lines of one invoice: two invoices sharing a number, header fields that
+    disagree, and optional totals."""
     gaps = []
     for inv, lines in groups.items():
-        identities = list(dict.fromkeys(" / ".join((r.get(f) or "").strip() for f in IDENTITY) for r in lines))
-        if len(identities) > 1:
-            gaps.append({"invoice": inv, "line": "", "field": "invoice_number", "value": inv,
-                         "rule": "mc-duplicate-invoice",
-                         "fix": "Different invoices (seller or issue date differ) share this number. Give each invoice "
-                                "its own number in the file; header and totals checks are skipped for it"})
+        if any(len(header_values(lines, f)) > 1 for f in IDENTITY):
+            gaps.append(make_item(inv, "", "invoice_number", inv, "mc-duplicate-invoice",
+                                  "Different invoices (seller or issue date differ) share this number. Give each "
+                                  "invoice its own number in the file; header and totals checks are skipped for it"))
             continue
         for f in HEADER:
-            values = list(dict.fromkeys((r.get(f) or "").strip() for r in lines))
+            values = header_values(lines, f)
             if len(values) > 1:
-                gaps.append({"invoice": inv, "line": "", "field": f, "value": " | ".join(values),
-                             "rule": "mc-header-mismatch", "fix": f"All lines of one invoice must carry the same {f}"})
+                gaps.append(make_item(inv, "", f, " | ".join(values.values()), "mc-header-mismatch",
+                                      f"All lines of one invoice must carry the same {f}"))
         for total_col, line_col in (("invoice_total_net", "line_net"), ("invoice_total_vat", "line_vat")):
-            if total_col not in columns:
+            if total_col not in columns or line_col not in columns:
                 continue
-            total = next((dec(r.get(total_col)) for r in lines if (r.get(total_col) or "").strip()), None)
-            parts = [dec(r.get(line_col)) if (r.get(line_col) or "").strip() else Decimal(0) for r in lines]
+            totals = header_values(lines, total_col)
+            raw_parts = [(r.get(line_col) or "").strip() for r in lines]
+            if len(totals) != 1 or not all(raw_parts):
+                continue  # no total, totals that disagree (reported above), or a blank line amount
+            total = dec(next(iter(totals.values())))
+            parts = [dec(v) for v in raw_parts]
             if total is None or None in parts:
                 continue
             got = sum(parts, Decimal(0))
             if abs(got - total) > Decimal("0.01") * len(lines):
-                gaps.append({"invoice": inv, "line": "", "field": total_col, "value": lines[0].get(total_col, ""),
-                             "rule": "mc-totals", "fix": f"Sum of {line_col} over {len(lines)} lines is {got:.2f}, not {total}"})
+                gaps.append(make_item(inv, "", total_col, next(iter(totals.values())), "mc-totals",
+                                      f"Sum of {line_col} over {len(lines)} lines is {got:.2f}, not {total}"))
     return gaps
 
 
@@ -288,43 +321,68 @@ def by_rule(items):
             for k, v in sorted(counts.items(), key=lambda kv: -kv[1])]
 
 
-def decode(data):
-    """UTF-8 (with or without BOM) first. Otherwise Windows Arabic (cp1256) if that gives Arabic
-    words, else Latin-1. Both single-byte encodings read any bytes, so the Arabic test decides."""
+def detect(prefix, complete):
+    """Picks an encoding from the start of the file (BOM already removed). UTF-8 first. Otherwise
+    Windows Arabic (cp1256) if that gives Arabic words, then Windows Latin (cp1252), then Latin-1,
+    which reads any bytes. A UTF-8 character cut off at the end of the prefix is not an error."""
     try:
-        return data.decode("utf-8-sig"), "utf-8-sig"
-    except UnicodeDecodeError:
-        pass
+        prefix.decode("utf-8")
+        return "utf-8"
+    except UnicodeDecodeError as e:
+        if not complete and e.reason == "unexpected end of data" and e.start >= len(prefix) - 3:
+            return "utf-8"
+    if ARABIC_WORD.search(prefix.decode("cp1256", errors="ignore")):
+        return "cp1256"
     try:
-        text = data.decode("cp1256")
-        if ARABIC_WORD.search(text):
-            return text, "cp1256"
+        prefix.decode("cp1252")
+        return "cp1252"
     except UnicodeDecodeError:
-        pass
-    return data.decode("latin-1"), "latin-1"
+        return "latin-1"
+
+
+def read_rows(path, skip, enc):
+    with open(path, "rb") as raw:
+        raw.seek(skip)
+        with io.TextIOWrapper(raw, encoding=enc, newline="") as fh:
+            reader = csv.reader(fh)
+            header = next(reader, None) or []
+            columns = [(k or "").strip().lower() for k in header]
+            if columns:
+                columns[0] = columns[0].lstrip("\ufeff").strip()
+            counts = defaultdict(int)
+            for c in columns:
+                counts[c] += 1
+            twice = [c for c, n in counts.items() if n > 1 and c]
+            if twice:
+                raise ValueError("these columns appear more than once (names are compared without case or spaces): "
+                                 + ", ".join(twice))
+            rows = []
+            for i, values in enumerate(reader, start=2):
+                if not any(v.strip() for v in values):
+                    continue
+                row = {c: (values[j] if j < len(values) else "") for j, c in enumerate(columns) if c}
+                row["_row"] = i
+                rows.append(row)
+    return rows, columns
 
 
 def load(path):
+    """Detects the encoding on the first 64 KB, then reads the file as a stream. If a later part of
+    the file does not decode, falls back to cp1252 and then Latin-1."""
     with open(path, "rb") as fh:
-        text, enc = decode(fh.read())
-    reader = csv.reader(io.StringIO(text, newline=""))
-    header = next(reader, None) or []
-    columns = [(k or "").strip().lower() for k in header]
-    counts = defaultdict(int)
-    for c in columns:
-        counts[c] += 1
-    twice = [c for c, n in counts.items() if n > 1 and c]
-    if twice:
-        raise ValueError("these columns appear more than once (names are compared without case or spaces): "
-                         + ", ".join(twice))
-    rows = []
-    for i, values in enumerate(reader, start=2):
-        if not any(v.strip() for v in values):
+        prefix = fh.read(PREFIX + 1)
+    skip = len(BOM) if prefix.startswith(BOM) else 0
+    complete = len(prefix) <= PREFIX
+    enc = detect(prefix[skip:PREFIX], complete)
+    order = [enc] + [e for e in ("cp1252", "latin-1") if e != enc]
+    for e in order[order.index(enc):]:
+        try:
+            rows, columns = read_rows(path, skip, e)
+        except UnicodeDecodeError:
             continue
-        row = {c: (values[j] if j < len(values) else "") for j, c in enumerate(columns) if c}
-        row["_row"] = i
-        rows.append(row)
-    return rows, enc, columns
+        name = "utf-8-sig" if e == "utf-8" and skip else e
+        return rows, name, columns
+    raise ValueError("could not read the file's text encoding")
 
 
 def mask(value):
@@ -351,9 +409,9 @@ def report(rows, enc, columns, show_all=False, hide_ids=False):
     gaps = once_per_invoice(gaps) + check_invoices(group_lines(rows), columns)
     warnings = once_per_invoice(warnings)
     if "unit_code" not in columns:
-        warnings.append({"invoice": "", "line": "", "field": "unit_code", "value": "", "rule": "mc-unit-code",
-                         "fix": "The file has no unit_code column. Add the unit of measure (BT-130, UN/ECE Rec 20) "
-                                "for each line, such as EA, HUR or DAY"})
+        warnings.append(make_item("", "", "unit_code", "", "mc-unit-code",
+                                  "The file has no unit_code column. Add the unit of measure (BT-130, UN/ECE Rec 20) "
+                                  "for each line, such as EA, HUR or DAY"))
     if hide_ids:
         gaps, warnings = masked(gaps), masked(warnings)
     shown = gaps if show_all else gaps[:SHOWN]
@@ -364,9 +422,10 @@ def report(rows, enc, columns, show_all=False, hide_ids=False):
         "file_encoding": enc, "lines": len(rows), "invoices": invoices,
         "invoices_with_gaps": with_gaps,
         "invoices_without_gaps_pct": round(100 * (invoices - with_gaps) / invoices) if invoices else 0,
-        "gaps_total": len(gaps), "gaps_shown": len(shown), "truncated": len(shown) < len(gaps),
+        "gaps_total": len(gaps), "gaps_shown": len(shown), "truncated": len(shown) < len(gaps) or len(warnings_shown) < len(warnings),
         "by_rule": by_rule(gaps),
         "warnings_total": len(warnings), "warnings_shown": len(warnings_shown),
+        "warnings_truncated": len(warnings_shown) < len(warnings),
         "warnings_by_rule": by_rule(warnings),
         "scenarios": scenarios(rows),
         "gaps": shown, "warnings": warnings_shown}
@@ -393,7 +452,10 @@ def summary(out):
 
 def run(argv):
     files = [a for a in argv[1:] if not a.startswith("--")]
-    if not files:
+    unknown = [a for a in argv[1:] if a.startswith("--") and a not in FLAGS]
+    if len(files) != 1 or unknown:
+        if unknown:
+            print(f"unknown option: {', '.join(unknown)}", file=sys.stderr)
         print("usage: python3 -I check_uae.py invoices.csv [--all] [--summary] [--mask]", file=sys.stderr)
         return 2
     try:

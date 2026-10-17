@@ -10,7 +10,8 @@
 - Output has scenario coverage and the share of invoices with no gaps.
 - New flags: `--summary` (short text) and `--mask` (hides the middle of TRNs and TINs).
 - Fixed a crash on a non-numeric `base_quantity`. Any unexpected error now exits 2, never 1.
-- Encoding: cp1256 is used only when the file has Arabic words; otherwise Latin-1.
+- Encoding: UTF-8 (with or without BOM), then cp1256 only when the file has Arabic words, then cp1252, then Latin-1. Detected on the first 64 KB, then read as a stream.
+- Unknown options or more than one file exit 2 with the usage message.
 - A column that appears twice after normalising names exits 2 with a message.
 - Readiness skill: readiness brief to copy and send, scenario coverage. README: deadlines, column guide, FAQ, troubleshooting, help.
 

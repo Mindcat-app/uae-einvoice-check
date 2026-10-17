@@ -10,7 +10,7 @@ Checks UAE invoice data from Salesforce or an ERP CSV export against the PINT AE
 > | Revenue under AED 50m | 31 Mar 2027 | 1 Jul 2027 |
 > | Government entities | 31 Mar 2027 | 1 Oct 2027 |
 >
-> Source: Ministerial Decision 244 of 2025 as amended by Ministerial Decision 66 of 2026. ASP means accredited service provider.
+> Source: Ministerial Decision 244 of 2025 as amended by Ministerial Resolution No. 66 of 2026. ASP means accredited service provider.
 
 ## Who it is for
 UAE finance teams in the second wave (revenue under AED 50m), and first-wave teams whose data isn't clean.
@@ -38,7 +38,7 @@ Checks marked `ibr-...-ae` or `aligned-ibrp-...` mirror rules in the official PI
 The output has **gaps** (fix these), **warnings** (the CSV alone cannot decide, such as a blank buyer TRN, which is fine for a consumer but not for a VAT-registered business), the share of invoices with no gaps, and **scenario coverage**: which invoice types, VAT categories and currencies the sample had, and which it did not.
 
 ## Columns
-One row per invoice line. Invoice-level fields repeat on every line of the invoice; gaps on them are reported once per invoice, and lines that disagree are a gap. Column names are matched without case or surrounding spaces.
+One row per invoice line. Invoice-level fields repeat on every line of the invoice, or sit on the first line only; gaps on them are reported once per invoice, and lines that disagree are a gap (blanks are ignored). Column names are matched without case or surrounding spaces.
 
 | Column | Meaning | Required? | Example |
 | --- | --- | --- | --- |
@@ -115,8 +115,8 @@ Exit codes: 0 no gaps, 1 gaps found, 2 the file could not be checked. See [docs/
 - **Does Mindcat see our invoices?** No. The check runs on your machine. See [PRIVACY.md](PRIVACY.md).
 
 ## Troubleshooting
-- **Exit code 2.** The file could not be checked: it is empty, has only a header row, has the same column twice (`Invoice_Number` and `invoice_number` count as the same), or could not be read. The message says which.
-- **Encoding.** Save as CSV UTF-8 if you can. Windows Arabic (cp1256) and Latin-1 files are read too; `file_encoding` in the output says which was used.
+- **Exit code 2.** The file could not be checked: it is empty, has only a header row, has the same column twice (`Invoice_Number` and `invoice_number` count as the same), could not be read, or the command had an unknown option or more than one file. The message says which.
+- **Encoding.** Save as CSV UTF-8 if you can. Windows Arabic (cp1256), Windows Latin (cp1252) and Latin-1 files are read too; `file_encoding` in the output says which was used.
 - **Excel number formats.** Excel may save `1,000.00`, `5%` or `AED 100`. Use plain numbers: digits and a dot only. These show as `mc-number-format`.
 - **Dates.** Excel may save `01/10/2026`. Use `2026-10-01` (YYYY-MM-DD).
 - **Commas in names.** A name with a comma must be in double quotes in the CSV. Excel does this when it saves as CSV.

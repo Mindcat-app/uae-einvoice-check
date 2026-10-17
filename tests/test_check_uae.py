@@ -113,6 +113,12 @@ class CheckUae(unittest.TestCase):
         self.assertNotIn("ibr-158-ae", rules(type_code="381", preceding_invoice="INV-0", credit_reason="VD"))
         self.assertNotIn("ibr-158-ae", rules())
 
+    def test_bad_allowance_or_charge_skips_line_maths(self):
+        for f in ("line_allowance", "line_charge"):
+            r = rules(**{f: "1,000"})
+            self.assertIn("mc-number-format", r)
+            self.assertNotIn("ibr-147-ae", r)
+
     def test_discount_and_base_quantity(self):
         self.assertEqual(rules(line_allowance="20", line_net="180", line_vat="9"), {})
         self.assertEqual(rules(quantity="20", unit_price="100", base_quantity="10", line_net="200"), {})
@@ -132,6 +138,9 @@ class CheckUae(unittest.TestCase):
         self.assertIn("aligned-ibrp-ae-05", rules(vat_category="AE", vat_rate="", line_vat="0"))
         self.assertIn("mc-reverse-charge-vat", rules(vat_category="AE", vat_rate="0", line_vat="10"))
         self.assertIn("ibr-103-ae", rules(vat_category="AE", vat_rate="0", line_vat="0", buyer_trn=""))
+        r = rules(vat_category="AE", vat_rate="0%", line_vat="0")
+        self.assertIn("mc-number-format", r)
+        self.assertNotIn("aligned-ibrp-ae-05", r)
 
     def test_foreign_buyer_not_held_to_uae_rules(self):
         self.assertEqual(rules(buyer_country="GB", buyer_trn="GB123456789", buyer_emirate="London"), {})
@@ -173,6 +182,33 @@ class CheckUae(unittest.TestCase):
         out = run(lines)[1]
         self.assertIn("mc-header-mismatch", rule_keys(out["gaps"]))
         self.assertNotIn("mc-header-mismatch", rule_keys(run([CLEAN, {**CLEAN, "line_id": "2"}])[1]["gaps"]))
+
+    def test_header_fields_only_on_the_first_line(self):
+        line2 = {**CLEAN, "line_id": "2", "seller_trn": "", "seller_name": "", "issue_date": "", "buyer_emirate": "",
+                 "invoice_total_net": "", "invoice_total_vat": ""}
+        first = {**CLEAN, "invoice_total_net": "400", "invoice_total_vat": "20"}
+        r = rule_keys(run([first, line2])[1]["gaps"])
+        self.assertNotIn("mc-duplicate-invoice", r)
+        self.assertNotIn("mc-header-mismatch", r)
+        self.assertNotIn("mc-totals", r)
+        bad = {**first, "invoice_total_net": "999"}
+        self.assertIn("mc-totals", rule_keys(run([bad, line2])[1]["gaps"]))
+
+    def test_header_mismatch_normalises_numbers_and_codes(self):
+        a = {**CLEAN, "currency": "USD", "exchange_rate": "3.6725", "line_net_aed": "734.50"}
+        b = {**a, "line_id": "2", "currency": "usd ", "exchange_rate": "3.67250"}
+        self.assertNotIn("mc-header-mismatch", rule_keys(run([a, b])[1]["gaps"]))
+        c = {**a, "line_id": "2", "exchange_rate": "3.70"}
+        self.assertIn("mc-header-mismatch", rule_keys(run([a, c])[1]["gaps"]))
+
+    def test_totals_skip_blank_or_missing_line_amounts(self):
+        e_line = {**CLEAN, "line_id": "2", "vat_category": "E", "vat_rate": "", "line_vat": "",
+                  "exemption_reason": "VATEX-AE-EXEMPT"}
+        rows = [{**CLEAN, "invoice_total_vat": "999"}, {**e_line, "invoice_total_vat": "999"}]
+        self.assertNotIn("mc-totals", rule_keys(run(rows)[1]["gaps"]))
+        no_vat_col = {k: v for k, v in CLEAN.items() if k not in ("line_vat",)}
+        code, out = run([{**no_vat_col, "vat_category": "O", "vat_rate": "", "invoice_total_vat": "5"}])
+        self.assertNotIn("mc-totals", rule_keys(out["gaps"]))
 
     def test_duplicate_invoice_numbers(self):
         other = {**CLEAN, "seller_trn": "100000000000203", "seller_name": "Other LLC"}
@@ -230,11 +266,37 @@ class CheckUae(unittest.TestCase):
 
     def test_encoding(self):
         utf8 = "invoice_number,buyer_name\nI1,Müller GmbH\n"
-        self.assertEqual(run(data=utf8.encode("utf-8"))[1]["file_encoding"], "utf-8-sig")
-        self.assertEqual(run(data=utf8.encode("latin-1"))[1]["file_encoding"], "latin-1")
-        self.assertEqual(run(data="invoice_number,buyer_name\nI1,CAFÉ\n".encode("latin-1"))[1]["file_encoding"], "latin-1")
+        self.assertEqual(run(data=utf8.encode("utf-8"))[1]["file_encoding"], "utf-8")
+        self.assertEqual(run(data=b"\xef\xbb\xbf" + utf8.encode("utf-8"))[1]["file_encoding"], "utf-8-sig")
+        self.assertEqual(run(data=utf8.encode("latin-1"))[1]["file_encoding"], "cp1252")
+        self.assertEqual(run(data=b"invoice_number,buyer_name\nI1,CAF\xc9 \x81\n")[1]["file_encoding"], "latin-1")
         arabic = "invoice_number,buyer_name\nI1,شركة المثال\n".encode("cp1256")
         self.assertEqual(run(data=arabic)[1]["file_encoding"], "cp1256")
+
+    def test_cp1252_smart_quote(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "x.csv"
+            path.write_bytes(b"invoice_number,buyer_name\nI1,O\x92Neil LLC\n")
+            rows, enc, columns = check_uae.load(path)
+        self.assertEqual((enc, rows[0]["buyer_name"]), ("cp1252", "O\u2019Neil LLC"))
+
+    def test_bom_with_a_bad_byte_keeps_the_first_column(self):
+        out = run(data=b"\xef\xbb\xbfinvoice_number,buyer_name\nI1,O\x92Neil\n")[1]
+        self.assertEqual(out["file_encoding"], "cp1252")
+        self.assertNotIn("invoice_number", {g["field"]: 1 for g in out["gaps"]})
+
+    def test_late_bad_byte_after_the_prefix(self):
+        head = "invoice_number,buyer_name\n" + "".join(f"I{i},Buyer {i}\n" for i in range(6000))
+        data = head.encode("utf-8") + b"I9,O\x92Neil\n"
+        self.assertGreater(len(data), check_uae.PREFIX)
+        out = run(data=data)[1]
+        self.assertEqual((out["file_encoding"], out["lines"]), ("cp1252", 6001))
+
+    def test_utf8_character_cut_at_the_prefix_end(self):
+        filler = ("invoice_number,buyer_name\n" + "I1,x\n" * 20000).encode("utf-8")
+        data = filler[:check_uae.PREFIX - 5] + b"\nI3," + "é".encode("utf-8") + b"\n"
+        self.assertEqual(data[check_uae.PREFIX - 1:check_uae.PREFIX + 1], "é".encode("utf-8"))  # split by the prefix
+        self.assertEqual(run(data=data)[1]["file_encoding"], "utf-8")
 
     def test_duplicate_headers_fail_loudly(self):
         code, out = run(text="Invoice_Number,invoice_number\nI1,I2\n")
@@ -247,6 +309,23 @@ class CheckUae(unittest.TestCase):
     def test_headers_are_normalised(self):
         code, out = run(text="Invoice_Number , LINE_ID\nINV-1,1\n")
         self.assertNotIn("invoice_number", {g["field"]: 1 for g in out["gaps"]})
+
+    def test_unknown_flags_and_extra_files_exit_2(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "x.csv"
+            path.write_text("invoice_number\nI1\n", encoding="utf-8")
+            code, out, err = call(path, ("--masked",))
+            self.assertEqual((code, out), (2, ""))
+            self.assertIn("unknown option: --masked", err)
+            self.assertEqual(call(path, (str(path),))[0], 2)
+
+    def test_warnings_truncation_is_flagged(self):
+        code, out = run([{**CLEAN, "invoice_number": f"I{i}", "buyer_trn": ""} for i in range(60)])
+        self.assertEqual(code, 0)
+        self.assertTrue(out["warnings_truncated"])
+        self.assertTrue(out["truncated"])
+        code, out = run([CLEAN])
+        self.assertFalse(out["warnings_truncated"] or out["truncated"])
 
     def test_truncation_is_flagged(self):
         code, out = run([{**CLEAN, "invoice_number": f"I{i}", "seller_trn": "1"} for i in range(60)])
