@@ -7,6 +7,12 @@
 - Output adds `coverage` (what the sample covers and lacks) and `warnings` (not counted as gaps).
 - New options: `--mask` hides TRNs and TINs, `--summary` prints a short text summary.
 - A non-numeric base quantity no longer crashes the check; duplicate column headers stop it with exit 2; blank header cells are ignored.
+- New inputs: Excel .xlsx (first sheet) and PINT AE UBL XML (a file or a folder). XML input runs the same checks on the XML's data; it is not full Schematron validation.
+- Transaction type flags (`ibr-154-ae`, `ibr-157-ae`) and Peppol endpoints (`ibr-080`, `ibr-081`, `ibr-062`, `ibr-063`, `ibr-cl-25`).
+- `--master customers` and `--master items` audit master data; new skill `einvoice-master-data`.
+- `--report` writes every gap to a CSV for a finance team; `--handoff` writes a field map and gap summary for the provider.
+- Salesforce fix pack (suggested fields, picklists and validation rules, as text for an admin) and export tips for common ERPs (unverified until checked against real exports).
+- Options are checked: a mistyped option stops with exit 2. Invoice-level cells filled on the first line only are read for the whole invoice. Non-UTF-8 files are read as cp1256 or cp1252.
 - README: deadlines with sources, CSV columns, what is not checked, FAQ, troubleshooting and help. New SECURITY, CONTRIBUTING and issue templates, and tests run in GitHub Actions.
 
 ## 0.1.0 - 2026-10-17

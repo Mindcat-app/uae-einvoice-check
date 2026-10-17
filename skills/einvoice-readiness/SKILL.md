@@ -20,20 +20,23 @@ If you do not know the company's UAE revenue band (AED 50m or more, under AED 50
 Do not state penalty amounts: the penalty decision is being replaced and the new amounts are not public.
 
 ## 2. Get a sample
-20 recent invoices with their lines and the customers on them. From Salesforce use `einvoice-from-salesforce`; from an ERP use `einvoice-from-export`. Save it as CSV with the columns in `${CLAUDE_PLUGIN_ROOT}/samples/uae-sample.csv`.
+20 recent invoices with their lines and the customers on them. From Salesforce use `einvoice-from-salesforce`; from an ERP use `einvoice-from-export`. The check reads CSV or .xlsx with the columns in `${CLAUDE_PLUGIN_ROOT}/samples/uae-sample.csv`, or PINT AE UBL XML (one file or a folder) as it is. For XML, say that this runs the plugin's checks on the XML's data and is not full Schematron validation; the provider still validates it. To check customer and item lists before invoices, use `einvoice-master-data`.
 
 ## 3. Check
 Use Read to look at files, not shell commands. Then run the check as one plain command, with no `cd` or other commands chained to it:
-`python3 -I "${CLAUDE_PLUGIN_ROOT}/engine/check_uae.py" <file.csv> --mask`
+`python3 -I "${CLAUDE_PLUGIN_ROOT}/engine/check_uae.py" <file.csv, .xlsx, .xml or folder> --mask`
 Use `--mask` by default whenever the file holds real customer data: it hides all but the last 4 characters of TRNs and TINs in the output, which goes to the AI provider. Drop it only for the bundled sample or when the user asks.
-Exit 0 means no gaps, 1 means gaps, 2 means the file could not be checked. If `truncated` is true, rerun with `--all` before writing totals.
+Exit 0 means no gaps, 1 means gaps, 2 means the file could not be checked. The totals in `by_rule` always cover every gap; `truncated` only means the `gaps` list shows the first 50. For a large file, add `--report <gaps.csv>` to write every gap to a CSV (with empty owner and status columns) that the finance team can sort and assign, instead of rerunning with `--all`. Add `--report` or `--handoff` only when the user wants files written, and say where they went.
 
 ## 4. Write the gap list
 Group by rule using `by_rule`, most common first. For each: the rule in plain words, how many invoices fail (the `invoices` count), one example (field and value), the fix, and who owns it (finance, sales ops or the Salesforce admin). Rules starting `ibr-` or `aligned-` come from the official PINT AE rules; rules starting `mc-` are Mindcat's data checks. The rule `mc-header-mismatch` means lines of one invoice disagree, or two invoices share one number. Note that this checks source data, not the final XML your provider sends.
 
 Then read `coverage`. For each item in `not_in_sample`, say plainly what the sample did not test, for example "Your sample has no credit notes, exports (zero-rated) or foreign-currency invoices, so those were not checked; add a few if you issue them." List `warnings` separately as things to confirm, not as gaps (a UAE buyer with no TRN is fine for consumers).
 
-## 5. Brief you can paste
+## 5. Hand-off pack for the provider (when asked)
+If the user has chosen an accredited service provider, offer `--handoff <folder>`. It writes `field-map.md` (each column and the PINT AE id it feeds, such as ibt-031 for the seller TRN) and `readiness.md` (gap counts by rule and field, and sample coverage), with no names, invoice numbers, TRNs or amounts. Explain that it is for their provider's onboarding team, to agree the mapping and the fixes. Give the gap list itself (`--report`) only if the user asks to share it.
+
+## 6. Brief you can paste
 Close with a heading "Brief you can paste" and exactly 3 lines, with no TRNs, names or amounts:
 1. Invoices checked, invoices with gaps, and the gap count per rule id.
 2. What the sample did not cover (`not_in_sample`), or "covers the common cases".
