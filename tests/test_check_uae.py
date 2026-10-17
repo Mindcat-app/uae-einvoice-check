@@ -11,6 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ENGINE = ROOT / "engine" / "check_uae.py"
 CLEAN = {"invoice_number": "INV-1", "issue_date": "2026-10-01", "type_code": "380", "currency": "AED",
+         "transaction_type": "00000000", "seller_endpoint_scheme": "0235", "seller_endpoint": "1000000000",
+         "buyer_endpoint_scheme": "0235", "buyer_endpoint": "1000000001",
          "seller_trn": "100000000000003", "seller_name": "Seller LLC", "seller_country": "AE", "seller_emirate": "DXB",
          "buyer_name": "Buyer LLC", "buyer_trn": "100000000000103", "buyer_country": "AE", "buyer_emirate": "AUH",
          "line_id": "1", "item_name": "Day", "item_kind": "service", "sac_code": "998311", "quantity": "2", "unit_code": "DAY",
@@ -114,6 +116,21 @@ class CheckUae(unittest.TestCase):
         self.assertIn("Invoices with gaps: 2 of 4", p.stdout)
         self.assertIn("ibr-132-ae", p.stdout)
         self.assertEqual(p.stdout.strip().splitlines()[-1], "Help getting ready: mindcat.ai/contact")
+
+    def test_transaction_type(self):
+        self.assertIn("ibr-154-ae", rules(transaction_type=""))
+        self.assertIn("ibr-154-ae", rules(transaction_type="0"))  # Excel turned 00000000 into a number
+        self.assertIn("ibr-154-ae", rules(transaction_type="0000000X"))
+        out_of_scope = {"type_code": "480", "vat_category": "O", "vat_rate": "", "line_vat": "", "seller_trn": ""}
+        self.assertIn("ibr-157-ae", rules(transaction_type="01000000", **out_of_scope))
+        self.assertNotIn("ibr-157-ae", rules(transaction_type="00000001", **out_of_scope))
+
+    def test_endpoints(self):
+        self.assertIn("ibr-081", rules(seller_endpoint=""))
+        self.assertIn("ibr-080", rules(buyer_endpoint=""))
+        self.assertIn("ibr-062", rules(seller_endpoint_scheme=""))
+        self.assertIn("ibr-063", rules(buyer_endpoint_scheme=""))
+        self.assertIn("ibr-cl-25", rules(buyer_endpoint_scheme="235"))
 
     def test_issue_date(self):
         for bad in ("01/10/2026", "2026-02-30", "2026-1-5", "20261001"):

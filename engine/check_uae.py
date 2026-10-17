@@ -36,11 +36,19 @@ NUMERIC = ["quantity", "unit_price", "base_quantity", "line_allowance", "line_ch
 HEADER = ["invoice_number", "issue_date", "type_code", "currency", "exchange_rate", "seller_name", "seller_trn",
           "seller_tin", "seller_emirate", "seller_country", "buyer_name", "buyer_trn", "buyer_emirate",
           "buyer_country", "preceding_invoice", "credit_reason", "invoice_total_net", "invoice_total_vat",
-          "invoice_total_gross"]
+          "invoice_total_gross", "transaction_type", "seller_endpoint", "seller_endpoint_scheme", "buyer_endpoint",
+          "buyer_endpoint_scheme"]
 MASKED = ["seller_trn", "buyer_trn", "seller_tin"]
 DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 CODE_FIELDS = ["type_code", "currency", "seller_emirate", "seller_country", "buyer_emirate", "buyer_country", "credit_reason"]
 UNIT = re.compile(r"^[A-Z0-9]{2,3}$")
+TX = re.compile(r"^[01]{8}$")
+# Endpoint scheme ids allowed by ibr-cl-25 (CEF EAS code list, PINT AE 1.0.4)
+EAS = dict.fromkeys(("0002 0007 0009 0037 0060 0088 0096 0097 0106 0130 0135 0142 0151 0154 0158 0177 0183 0184 0188 0190 "
+                     "0191 0192 0193 0195 0196 0198 0199 0200 0201 0202 0204 0208 0209 0210 0211 0212 0213 0215 0216 0218 "
+                     "0221 0230 0235 0240 0242 0244 0245 0246 0248 9910 9913 9914 9915 9918 9919 9920 9922 9923 9924 9925 "
+                     "9926 9927 9928 9929 9930 9931 9932 9933 9934 9935 9936 9937 9938 9939 9940 9941 9942 9943 9944 9945 "
+                     "9946 9947 9948 9949 9950 9951 9952 9953 9957 9959").split())
 SCENARIOS = [("credit note (381 or 81)", lambda c: any(c["type_code"].get(t) for t in CREDIT_TYPES)), ("zero-rated (Z)", lambda c: c["vat_category"].get("Z")),
              ("exempt (E)", lambda c: c["vat_category"].get("E")), ("reverse charge (AE)", lambda c: c["vat_category"].get("AE")),
              ("non-AED currency", lambda c: any(k not in ("AED", "(blank)") for k in c["currency"]))]
@@ -94,6 +102,23 @@ def check_row(r):
         gap("credit_reason", "ibr-001-ae", "Use DL8.61.1.A, DL8.61.1.B, DL8.61.1.C, DL8.61.1.D, DL8.61.1.E or VD (capitals)")
     if t in OUT_OF_SCOPE_TYPES and cat and cat not in {"E", "O", "Z"}:
         gap("vat_category", "ibr-122-ae", "Type 480 and 81 lines can only be E, O or Z")
+
+    # Transaction type flags (BTAE-02): 8 positions of 0 or 1
+    tx = get("transaction_type")
+    if not TX.match(tx):
+        gap("transaction_type", "ibr-154-ae", "Give 8 flags of 0 or 1, such as 00000000; format the column as text")
+    elif t in OUT_OF_SCOPE_TYPES and "1" in tx[1:4]:
+        gap("transaction_type", "ibr-157-ae", "Types 480 and 81 cannot be deemed supply, margin scheme or summary (positions 2-4)")
+
+    # Peppol electronic addresses
+    for who, need, scheme_rule in (("seller", "ibr-081", "ibr-062"), ("buyer", "ibr-080", "ibr-063")):
+        scheme = get(f"{who}_endpoint_scheme")
+        if not get(f"{who}_endpoint"):
+            gap(f"{who}_endpoint", need, f"The {who} needs an electronic address (endpoint id)")
+        elif not scheme:
+            gap(f"{who}_endpoint_scheme", scheme_rule, "Give the endpoint scheme, 0235 for the UAE")
+        elif scheme not in EAS:
+            gap(f"{who}_endpoint_scheme", "ibr-cl-25", "Use a scheme id from the Peppol EAS list, 0235 for the UAE")
 
     # Seller identifiers
     trn, tin = get("seller_trn"), get("seller_tin")
