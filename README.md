@@ -35,5 +35,10 @@ Checks marked `ibr-...-ae` mirror rules in the official PINT AE v1.0.4 Schematro
 ## Try it
 `python3 -I engine/check_uae.py samples/uae-sample.csv`
 
+## Support
+- Email: apps@mindcat.ai
+- Contact: https://mindcat.ai/contact
+- Privacy policy: https://mindcat.ai/privacy-policy
+
 ## Status
 Scaffold. Plan: https://claude.ai/code/artifact/8677d048-1033-4825-a70e-87b1377041f9
