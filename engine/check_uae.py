@@ -19,18 +19,19 @@ import io
 import json
 import re
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 TRN = re.compile(r"^1[0-9]{12}03$")
 TIN = re.compile(r"^1[0-9]{9}$")
 ISO_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 UNIT_CODE = re.compile(r"^[A-Z0-9]{2,3}$")
-EMIRATES = {"AUH", "DXB", "SHJ", "UAQ", "FUJ", "AJM", "RAK"}
+NUMBER = re.compile(r"-?[0-9]+(\.[0-9]+)?")
+EMIRATES = ("AUH", "DXB", "SHJ", "UAQ", "FUJ", "AJM", "RAK")
 INVOICE_TYPES, CREDIT_TYPES = {"380", "480"}, {"381", "81"}
 OUT_OF_SCOPE_TYPES = {"480", "81"}
-VAT_CATEGORIES = {"S", "Z", "E", "O", "AE", "N"}
+VAT_CATEGORIES = ("S", "Z", "E", "O", "AE", "N")
 ITEM_KINDS = {"goods": "G", "g": "G", "service": "S", "services": "S", "s": "S", "both": "B", "b": "B"}
 REQUIRED = ["invoice_number", "issue_date", "type_code", "currency", "seller_name", "buyer_name",
             "line_id", "item_name", "quantity", "unit_price", "line_net", "vat_category"]
@@ -56,15 +57,23 @@ CONTACT = "Want help fixing these before your provider goes live? Email apps@min
 
 
 def dec(v):
-    """Strict decimal: ASCII digits only, finite. Returns None for empty or unreadable values."""
+    """Strict decimal: ASCII digits and one optional dot. Returns None for empty or unreadable values.
+    The pattern only matches finite numbers, so Decimal() cannot fail on it."""
     s = (v or "").strip()
-    if not s or not re.fullmatch(r"-?[0-9]+(\.[0-9]+)?", s):
-        return None
-    try:
-        d = Decimal(s)
-    except InvalidOperation:
-        return None
-    return d if d.is_finite() else None
+    return Decimal(s) if NUMBER.fullmatch(s) else None
+
+
+def one_of(codes):
+    """'A, B or C' from a list of codes, in the list's order."""
+    return ", ".join(codes[:-1]) + " or " + codes[-1]
+
+
+EMIRATE_FIX = f"Use {one_of(EMIRATES)} (capitals)"
+CATEGORY_FIX = f"Use {one_of(VAT_CATEGORIES)} (capitals)"
+# Tax number formats: field, pattern, rule, fix. Seller ones always apply; buyer ones only for a UAE buyer.
+SELLER_IDS = [("seller_trn", TRN, "ibr-132-ae", "TRN must be 15 digits, start with 1 and end with 03"),
+              ("seller_tin", TIN, "ibr-148-ae", "TIN must be 10 digits starting with 1")]
+BUYER_IDS = [("buyer_trn", TRN, "ibr-132-ae", "Buyer TRN must be 15 digits, start with 1 and end with 03")]
 
 
 def make_item(invoice, line, field, value, rule, fix):
@@ -79,6 +88,13 @@ def invoice_key(r):
 def check_row(r):
     """Returns (gaps, warnings) for one invoice line."""
     gaps, warnings = [], []
+    v = {f: (x or "").strip() for f, x in r.items() if f != "_row"}
+    get = lambda f: v.get(f, "")
+    n = {f: dec(get(f)) for f in NUMERIC}
+
+    def num_or(f, default):
+        """The parsed number, the default when blank, or None when it does not parse."""
+        return n[f] if get(f) else default
 
     def item(field, rule, fix):
         return make_item(invoice_key(r), r.get("line_id", ""), field, r.get(field, ""), rule, fix)
@@ -86,12 +102,11 @@ def check_row(r):
     def gap(field, rule, fix):
         gaps.append(item(field, rule, fix))
 
-    get = lambda f: (r.get(f) or "").strip()
     for f in REQUIRED:
         if not get(f):
             gap(f, "mc-missing", f"{f} is empty")
     for f in NUMERIC:
-        if get(f) and dec(get(f)) is None:
+        if get(f) and n[f] is None:
             gap(f, "mc-number-format", "Use a plain number: digits and a dot, no commas, % or currency signs")
 
     issued = get("issue_date")
@@ -114,33 +129,33 @@ def check_row(r):
         gap("vat_category", "ibr-122-ae", "Type 480 and 81 lines can only be E, O or Z")
 
     # Seller identifiers
-    trn, tin = get("seller_trn"), get("seller_tin")
-    if t not in OUT_OF_SCOPE_TYPES and not trn:
+    if t not in OUT_OF_SCOPE_TYPES and not get("seller_trn"):
         gap("seller_trn", "ibr-134-ae", "Seller TRN is required except on type 480 and 81")
-    if not trn and not tin:
+    if not get("seller_trn") and not get("seller_tin"):
         gap("seller_tin", "ibr-177-ae", "Give the seller TRN or TIN")
-    if trn and not TRN.match(trn):
-        gap("seller_trn", "ibr-132-ae", "TRN must be 15 digits, start with 1 and end with 03")
-    if tin and not TIN.match(tin):
-        gap("seller_tin", "ibr-148-ae", "TIN must be 10 digits starting with 1")
+    def id_formats(checks):
+        for f, pattern, rule, fix in checks:
+            if get(f) and not pattern.match(get(f)):
+                gap(f, rule, fix)
+
+    id_formats(SELLER_IDS)
     if get("seller_country").upper() in ("", "AE") and get("seller_emirate") not in EMIRATES:
-        gap("seller_emirate", "ibr-128-ae", "Use AUH, DXB, SHJ, UAQ, FUJ, AJM or RAK (capitals)")
+        gap("seller_emirate", "ibr-128-ae", EMIRATE_FIX)
 
     # Buyer: UAE rules apply only when the buyer is in the UAE (blank country is read as AE)
     if get("buyer_country").upper() in ("", "AE"):
-        if get("buyer_trn") and not TRN.match(get("buyer_trn")):
-            gap("buyer_trn", "ibr-132-ae", "Buyer TRN must be 15 digits, start with 1 and end with 03")
+        id_formats(BUYER_IDS)
         if get("buyer_emirate") and get("buyer_emirate") not in EMIRATES:
-            gap("buyer_emirate", "ibr-128-ae", "Use AUH, DXB, SHJ, UAQ, FUJ, AJM or RAK (capitals)")
+            gap("buyer_emirate", "ibr-128-ae", EMIRATE_FIX)
         if not get("buyer_trn") and cat != "AE":
             warnings.append(item("buyer_trn", "mc-buyer-trn-missing",
                                  "Buyer TRN is blank. Fine for a consumer, but a B2B buyer registered "
                                  "for VAT needs its TRN on the invoice"))
 
     # VAT category rules
-    rate, vat, net = dec(get("vat_rate")), dec(get("line_vat")), dec(get("line_net"))
+    rate, vat, net = n["vat_rate"], n["line_vat"], n["line_net"]
     if cat and cat not in VAT_CATEGORIES:
-        gap("vat_category", "ibr-139-ae", "Use S, Z, E, O, AE or N (capitals)")
+        gap("vat_category", "ibr-139-ae", CATEGORY_FIX)
     if cat == "S":
         if rate != 5:
             gap("vat_rate", "ibr-190-ae", "Standard-rated (S) lines must be 5")
@@ -165,12 +180,11 @@ def check_row(r):
         gap("line_vat", "mc-vat-maths", f"net x rate = {net * rate / 100:.2f}, not {vat}")
 
     # Line maths: qty x (price / base qty) + charges - allowances
-    q, p = dec(get("quantity")), dec(get("unit_price"))
-    base = dec(get("base_quantity")) if get("base_quantity") else Decimal(1)
+    q, p = n["quantity"], n["unit_price"]
+    base = num_or("base_quantity", Decimal(1))
     if base is not None and base <= 0:
         gap("base_quantity", "mc-base-quantity", "Base quantity must be more than 0; leave it empty for 1")
-    allow = dec(get("line_allowance")) if get("line_allowance") else Decimal(0)
-    charge = dec(get("line_charge")) if get("line_charge") else Decimal(0)
+    allow, charge = num_or("line_allowance", Decimal(0)), num_or("line_charge", Decimal(0))
     if None not in (q, p, net, base, allow, charge) and base > 0:
         want = q * (p / base) + charge - allow
         if abs(want - net) > Decimal("0.01"):
@@ -189,7 +203,7 @@ def check_row(r):
             gap("exchange_rate", "ibr-159-ae", "Non-AED invoices need the exchange rate to AED")
         if cat != "E" and not get("line_net_aed"):
             gap("line_net_aed", "ibr-104-ae", "Non-AED invoices need each line's amount in AED")
-        xr, net_aed = dec(get("exchange_rate")), dec(get("line_net_aed"))
+        xr, net_aed = n["exchange_rate"], n["line_net_aed"]
         if None not in (xr, net_aed, net):
             want = net * xr
             tolerance = max(Decimal("0.01"), abs(net) * Decimal("0.0001"))
@@ -241,8 +255,9 @@ def header_values(lines, field):
         raw = (r.get(field) or "").strip()
         if not raw:
             continue
-        if field in NUMERIC_HEADER and dec(raw) is not None:
-            key = str(dec(raw).normalize())
+        number = dec(raw) if field in NUMERIC_HEADER else None
+        if number is not None:
+            key = str(number.normalize())
         elif field in CODE_HEADER:
             key = raw.upper()
         else:
@@ -256,69 +271,66 @@ def check_invoices(groups, columns):
     disagree, and optional totals."""
     gaps = []
     for inv, lines in groups.items():
-        if any(len(header_values(lines, f)) > 1 for f in IDENTITY):
+        hv = {f: header_values(lines, f) for f in HEADER}
+        if any(len(hv[f]) > 1 for f in IDENTITY):
             gaps.append(make_item(inv, "", "invoice_number", inv, "mc-duplicate-invoice",
                                   "Different invoices (seller or issue date differ) share this number. Give each "
                                   "invoice its own number in the file; header and totals checks are skipped for it"))
             continue
         for f in HEADER:
-            values = header_values(lines, f)
-            if len(values) > 1:
-                gaps.append(make_item(inv, "", f, " | ".join(values.values()), "mc-header-mismatch",
+            if len(hv[f]) > 1:
+                gaps.append(make_item(inv, "", f, " | ".join(hv[f].values()), "mc-header-mismatch",
                                       f"All lines of one invoice must carry the same {f}"))
         for total_col, line_col in (("invoice_total_net", "line_net"), ("invoice_total_vat", "line_vat")):
             if total_col not in columns or line_col not in columns:
                 continue
-            totals = header_values(lines, total_col)
             raw_parts = [(r.get(line_col) or "").strip() for r in lines]
-            if len(totals) != 1 or not all(raw_parts):
+            if len(hv[total_col]) != 1 or not all(raw_parts):
                 continue  # no total, totals that disagree (reported above), or a blank line amount
-            total = dec(next(iter(totals.values())))
-            parts = [dec(v) for v in raw_parts]
+            raw_total = next(iter(hv[total_col].values()))
+            total, parts = dec(raw_total), [dec(x) for x in raw_parts]
             if total is None or None in parts:
                 continue
             got = sum(parts, Decimal(0))
             if abs(got - total) > Decimal("0.01") * len(lines):
-                gaps.append(make_item(inv, "", total_col, next(iter(totals.values())), "mc-totals",
+                gaps.append(make_item(inv, "", total_col, raw_total, "mc-totals",
                                       f"Sum of {line_col} over {len(lines)} lines is {got:.2f}, not {total}"))
     return gaps
 
 
-def scenarios(rows):
-    """What the sample covers, so a clean result on a narrow sample is not read as ready."""
+def first_lines(rows):
+    """The first line of each invoice, keyed by invoice."""
     first = {}
     for r in rows:
         first.setdefault(invoice_key(r), r)
+    return first
+
+
+def scenarios(rows, first):
+    """What the sample covers, so a clean result on a narrow sample is not read as ready."""
     by_type = {"invoice": 0, "credit_note": 0, "other": 0}
     foreign = 0
     for r in first.values():
         t = (r.get("type_code") or "").strip()
         by_type["invoice" if t in INVOICE_TYPES else "credit_note" if t in CREDIT_TYPES else "other"] += 1
         cur = (r.get("currency") or "").strip().upper()
-        if cur and cur != "AED":
-            foreign += 1
-    categories = defaultdict(int)
-    for r in rows:
-        cat = (r.get("vat_category") or "").strip()
-        if cat:
-            categories[cat] += 1
+        foreign += bool(cur and cur != "AED")
+    categories = Counter(c for c in ((r.get("vat_category") or "").strip() for r in rows) if c)
     missing = [label for label, present in (
         ("credit notes (381 or 81)", by_type["credit_note"] > 0),
-        ("zero-rated (Z) lines", categories.get("Z", 0) > 0),
-        ("exempt (E) lines", categories.get("E", 0) > 0),
-        ("reverse-charge (AE) lines", categories.get("AE", 0) > 0),
+        ("zero-rated (Z) lines", categories["Z"] > 0),
+        ("exempt (E) lines", categories["E"] > 0),
+        ("reverse-charge (AE) lines", categories["AE"] > 0),
         ("non-AED invoices", foreign > 0)) if not present]
     return {"invoices_by_type": by_type, "vat_category_lines": dict(sorted(categories.items())),
             "foreign_currency": foreign > 0, "foreign_currency_invoices": foreign, "not_in_sample": missing}
 
 
 def by_rule(items):
-    counts, invoices = defaultdict(int), defaultdict(dict)
+    counts, invoices = Counter(g["rule"] for g in items), defaultdict(dict)
     for g in items:
-        counts[g["rule"]] += 1
         invoices[g["rule"]][g["invoice"]] = True
-    return [{"rule": k, "gaps": v, "invoices": len(invoices[k])}
-            for k, v in sorted(counts.items(), key=lambda kv: -kv[1])]
+    return [{"rule": k, "gaps": c, "invoices": len(invoices[k])} for k, c in counts.most_common()]
 
 
 def detect(prefix, complete):
@@ -346,13 +358,8 @@ def read_rows(path, skip, enc):
         with io.TextIOWrapper(raw, encoding=enc, newline="") as fh:
             reader = csv.reader(fh)
             header = next(reader, None) or []
-            columns = [(k or "").strip().lower() for k in header]
-            if columns:
-                columns[0] = columns[0].lstrip("\ufeff").strip()
-            counts = defaultdict(int)
-            for c in columns:
-                counts[c] += 1
-            twice = [c for c, n in counts.items() if n > 1 and c]
+            columns = [k.strip().lower() for k in header]
+            twice = [c for c, k in Counter(columns).items() if k > 1 and c]
             if twice:
                 raise ValueError("these columns appear more than once (names are compared without case or spaces): "
                                  + ", ".join(twice))
@@ -374,8 +381,7 @@ def load(path):
     skip = len(BOM) if prefix.startswith(BOM) else 0
     complete = len(prefix) <= PREFIX
     enc = detect(prefix[skip:PREFIX], complete)
-    order = [enc] + [e for e in ("cp1252", "latin-1") if e != enc]
-    for e in order[order.index(enc):]:
+    for e in dict.fromkeys([enc, "cp1252", "latin-1"]):
         try:
             rows, columns = read_rows(path, skip, e)
         except UnicodeDecodeError:
@@ -416,7 +422,8 @@ def report(rows, enc, columns, show_all=False, hide_ids=False):
         gaps, warnings = masked(gaps), masked(warnings)
     shown = gaps if show_all else gaps[:SHOWN]
     warnings_shown = warnings if show_all else warnings[:SHOWN]
-    invoices = len(dict.fromkeys(invoice_key(r) for r in rows))
+    first = first_lines(rows)
+    invoices = len(first)
     with_gaps = len(dict.fromkeys(g["invoice"] for g in gaps if g["invoice"]))
     return {
         "file_encoding": enc, "lines": len(rows), "invoices": invoices,
@@ -427,7 +434,7 @@ def report(rows, enc, columns, show_all=False, hide_ids=False):
         "warnings_total": len(warnings), "warnings_shown": len(warnings_shown),
         "warnings_truncated": len(warnings_shown) < len(warnings),
         "warnings_by_rule": by_rule(warnings),
-        "scenarios": scenarios(rows),
+        "scenarios": scenarios(rows, first),
         "gaps": shown, "warnings": warnings_shown}
 
 
