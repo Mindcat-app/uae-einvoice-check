@@ -13,7 +13,7 @@ ALLOW = [("Write", {"file_path": "r.md", "content": "This plugin never submits i
          ("Bash", {"command": "python3 -I engine/check_uae.py exports/Q3_reporting_clearance.csv"}),
          ("Bash", {"command": "sf data query -q 'SELECT Submitted_Date__c FROM blng__Invoice__c'"}),
          ("Bash", {"command": "curl https://docs.peppol.eu/poac/ae/pint-ae/resources.zip -o r.zip"}),
-         ("mcp__salesforce__soqlQuery", {})]
+         ("mcp__salesforce__soqlQuery", {}), ("mcp__linear__create_issue", {}), ("mcp__whatsapp__send_message", {})]
 DENY = [("Bash", {"command": "curl -X POST https://api.asp.example/v1/invoices -d @inv.xml"}),
         ("Bash", {"command": "curl --data-binary @inv.xml https://x/v1/documents"}),
         ("Bash", {"command": "curl -F f=@inv.xml https://x/peppol/send"}),
@@ -21,6 +21,8 @@ DENY = [("Bash", {"command": "curl -X POST https://api.asp.example/v1/invoices -
         ("Bash", {"command": "http POST https://x inv=@a"}),
         ("Bash", {"command": "openssl dgst -sha256 -sign key.pem inv.xml"}),
         ("Bash", {"command": "sf data update record -s blng__Invoice__c -i a1 -v Status=Posted"}),
+        ("Bash", {"command": "sfdx force:data:record:create -s Account -v Name=X"}),
+        ("Bash", {"command": "sf api request rest /services/data/v62.0/sobjects/Account/001 --method PATCH"}),
         ("mcp__asp__transmit_document", {}), ("mcp__zatca__report_invoice", {})]
 
 
@@ -43,6 +45,7 @@ class Guard(unittest.TestCase):
     def test_fails_closed(self):
         self.assertEqual(code("garbage"), 2)
         self.assertEqual(code("{}"), 2)
+        self.assertEqual(code({"tool_name": "Bash", "tool_input": [1]}), 2)
 
 
 if __name__ == "__main__":

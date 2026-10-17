@@ -61,6 +61,7 @@ class CheckUae(unittest.TestCase):
     def test_discount_and_base_quantity(self):
         self.assertEqual(rules(line_allowance="20", line_net="180", line_vat="9"), set())
         self.assertEqual(rules(quantity="20", unit_price="100", base_quantity="10", line_net="200"), set())
+        self.assertIn("mc-base-quantity", rules(base_quantity="0"))
 
     def test_categories(self):
         self.assertIn("ibr-167-ae", rules(vat_category="E", vat_rate="", line_vat=""))

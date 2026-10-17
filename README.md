@@ -15,7 +15,12 @@ UAE finance teams in the second wave (revenue under AED 50m: appoint an accredit
 - **Local check engine** (`engine/check_uae.py`, Python standard library only). It reads the CSV the user points at and prints the gaps. It makes no network calls.
 - **Salesforce reads** (optional) through the user's own read-only SOQL tools, to build the sample.
 - **Nothing is sent to Mindcat.** There is no hosted server yet and no telemetry.
-- **Guard hook** (`hooks/no_submit_guard.py`): blocks HTTP writes, Salesforce writes, signing commands and MCP tools whose names look like sending or changing data. It reads only the command or tool name, never file contents, and fails closed.
+- **Guard hook** (`hooks/no_submit_guard.py`): a keyword backstop, not a sandbox. While the plugin is enabled it blocks, in every Claude Code session: shell HTTP writes (curl, wget, httpie POST/PUT/PATCH/DELETE), Salesforce CLI writes, signing commands, and send- or change-type tools on invoice, tax, ERP or Salesforce MCP servers. It reads only the command or tool name, never file contents, and blocks when it can't read a call. A determined script can get round it, so give the plugin read-only access as well. To run a blocked command for other work, disable the plugin with `/plugin disable mindcat-einvoice-check`. The hook runs in Claude Code and Cowork, not in Cursor.
+
+## Data handling
+The invoice data you check (customer names, TRNs, addresses, amounts) is read on your machine and passes through your AI client's conversation, under that client's own data terms. Any CSV the plugin writes stays on your disk. Mindcat receives nothing.
+
+Needs Python 3 (standard library only).
 
 ## Rules
 Checks marked `ibr-...-ae` mirror rules in the official PINT AE v1.0.4 Schematron (https://docs.peppol.eu/poac/ae/pint-ae/resources.zip). Checks marked `mc-` are Mindcat data checks. This is a pre-check on source data; the provider still validates the final XML.

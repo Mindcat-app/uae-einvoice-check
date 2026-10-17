@@ -111,7 +111,9 @@ def check_row(r):
 
     # Line maths: qty x (price / base qty) + charges - allowances
     q, p = dec(get("quantity")), dec(get("unit_price"))
-    base = dec(get("base_quantity")) or Decimal(1)
+    base = dec(get("base_quantity")) if get("base_quantity") else Decimal(1)
+    if base is not None and base <= 0:
+        gap("base_quantity", "mc-base-quantity", "Base quantity must be more than 0; leave it empty for 1")
     allow, charge = dec(get("line_allowance")) or Decimal(0), dec(get("line_charge")) or Decimal(0)
     if None not in (q, p, net) and base != 0:
         want = q * (p / base) + charge - allow

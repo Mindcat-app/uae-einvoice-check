@@ -6,5 +6,15 @@
     "name": "Mindcat",
     "email": "apps@mindcat.ai"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "homepage": "https://mindcat.ai",
+  "repository": "https://github.com/Mindcat-app/uae-einvoice-check",
+  "keywords": [
+    "e-invoicing",
+    "UAE",
+    "PINT AE",
+    "VAT",
+    "Salesforce"
+  ],
+  "logo": ".claude-plugin/icon.png"
 }
