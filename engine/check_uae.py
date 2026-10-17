@@ -13,6 +13,7 @@ Exit codes: 0 no gaps, 1 gaps found, 2 the file could not be checked.
 import argparse
 import csv
 import datetime
+import io
 import json
 import os
 import re
@@ -171,8 +172,9 @@ def check_row(r):
     base = dec(get("base_quantity")) if get("base_quantity") else Decimal(1)
     if base is not None and base <= 0:
         gap("base_quantity", "mc-base-quantity", "Base quantity must be more than 0; leave it empty for 1")
-    allow, charge = dec(get("line_allowance")) or Decimal(0), dec(get("line_charge")) or Decimal(0)
-    if None not in (q, p, net, base) and base != 0:
+    allow = dec(get("line_allowance")) if get("line_allowance") else Decimal(0)
+    charge = dec(get("line_charge")) if get("line_charge") else Decimal(0)
+    if None not in (q, p, net, base, allow, charge) and base != 0:  # unreadable numbers are reported once, above
         want = q * (p / base) + charge - allow
         if abs(want - net) > Decimal("0.01"):
             gap("line_net", "ibr-147-ae", f"quantity x price / base quantity + charges - allowances = {want:.2f}, not {net}")
@@ -258,6 +260,19 @@ def norm(f, v):
     return dec(v) if f in NUMERIC and dec(v) is not None else v
 
 
+def fill_headers(rows):
+    """Many exports fill invoice-level columns on the first line only: copy them to blank cells on later lines."""
+    first = {}
+    for r in rows:
+        if not (r.get("invoice_number") or "").strip():
+            continue
+        top = first.setdefault((inv(r), r.get("_file")), r)
+        for f in HEADER:
+            if not (r.get(f) or "").strip() and (top.get(f) or "").strip():
+                r[f] = top[f]
+    return rows
+
+
 def check_invoices(rows):
     """Per-invoice checks: header fields that differ between lines, and warnings that are not gaps."""
     gaps, warnings, by_inv, files = [], [], defaultdict(list), defaultdict(dict)
@@ -284,10 +299,11 @@ def check_invoices(rows):
 
 
 def check_totals(i, r, lines):
-    """Optional invoice_total_* columns: compare with the sums of the lines (blank line_vat counts as 0)."""
+    """Optional invoice_total_* columns: compare with the sums of the lines; skipped when a line amount is unknown."""
     gaps = []
     nets = [dec(x.get("line_net")) for x in lines]
-    vats = [dec(x.get("line_vat")) if (x.get("line_vat") or "").strip() else Decimal(0) for x in lines]
+    vats = [Decimal(0) if not (x.get("line_vat") or "").strip() and (x.get("vat_category") or "").strip() in ("E", "O")
+            else dec(x.get("line_vat")) for x in lines]  # a blank VAT only counts as 0 on E and O lines
     net = None if None in nets else sum(nets)
     vat = None if None in vats else sum(vats)
     gross = None if None in (net, vat) else net + vat
@@ -364,17 +380,27 @@ def to_rows(header, records):
     return rows
 
 
+def decode(data):
+    """UTF-8 first. Otherwise Arabic Windows (cp1256) when the text has Arabic words, else Western Windows (cp1252)."""
+    data = data[3:] if data.startswith(b"\xef\xbb\xbf") else data
+    try:
+        return data.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError:
+        pass
+    arabic = data.decode("cp1256")  # decodes any bytes
+    if re.search("[\u0621-\u064a]{2,}", arabic):
+        return arabic, "cp1256"
+    try:
+        return data.decode("cp1252"), "cp1252"
+    except UnicodeDecodeError:
+        return arabic, "cp1256"
+
+
 def load_csv(path):
-    # cp1256 (Arabic Windows) decodes any bytes, so it is the last try; save other files as UTF-8.
-    for enc in ("utf-8-sig", "cp1256"):
-        try:
-            with open(path, newline="", encoding=enc) as fh:
-                lines = list(csv.reader(fh))
-        except UnicodeDecodeError:
-            continue
-        lines = [x for x in lines if x]
-        return (to_rows(lines[0], list(enumerate(lines[1:], start=2))) if lines else []), enc
-    raise ValueError("could not read the file's text encoding")
+    with open(path, "rb") as fh:
+        content, enc = decode(fh.read())
+    lines = [x for x in csv.reader(io.StringIO(content, newline="")) if x]
+    return (to_rows(lines[0], list(enumerate(lines[1:], start=2))) if lines else []), enc
 
 
 def local(el):
@@ -581,7 +607,7 @@ def main(argv):
     if a.master:
         gaps, warnings = [g for r in rows for g in check_master(r, a.master)], []
     else:
-        inv_gaps, warnings = check_invoices(rows)
+        inv_gaps, warnings = check_invoices(fill_headers(rows))
         gaps = dedupe([g for r in rows for g in check_row(r)]) + inv_gaps
     who = lambda g: g.get("invoice", g.get("record"))
     by_rule, invoices_by_rule, fields_by_rule = defaultdict(int), defaultdict(dict), defaultdict(dict)

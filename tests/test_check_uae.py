@@ -117,6 +117,37 @@ class CheckUae(unittest.TestCase):
         self.assertIn("ibr-132-ae", p.stdout)
         self.assertEqual(p.stdout.strip().splitlines()[-1], "Help getting ready: mindcat.ai/contact")
 
+    def test_totals_with_blank_line_vat(self):
+        totals = {"invoice_total_net": "200", "invoice_total_vat": "10", "invoice_total_gross": "210"}
+        self.assertEqual(rules(line_vat="", **totals), [])  # unknown line VAT: no total check, not a false gap
+        exempt = {**CLEAN, "line_id": "2", "vat_category": "E", "vat_rate": "", "line_vat": "", "exemption_reason": "VATEX-AE-EXEMPT"}
+        both = {**totals, "invoice_total_net": "400", "invoice_total_gross": "410"}
+        code, out = run([{**CLEAN, **both}, {**exempt, **both}])
+        self.assertEqual(code, 0, out)
+
+    def test_header_cells_filled_on_first_line_only(self):
+        blank = {f: "" for f in ("issue_date", "type_code", "currency", "seller_name", "seller_trn", "seller_country",
+                                 "seller_emirate", "buyer_name", "buyer_trn", "transaction_type", "seller_endpoint",
+                                 "seller_endpoint_scheme", "buyer_endpoint", "buyer_endpoint_scheme")}
+        code, out = run([CLEAN, {**CLEAN, "line_id": "2", **blank}])
+        self.assertEqual((code, out["gaps"]), (0, []))
+
+    def test_bad_allowance_is_one_gap(self):
+        self.assertEqual(rules(line_allowance="2O", line_net="180", line_vat="9"), ["mc-number-format"])
+
+    def test_western_and_arabic_windows_files(self):
+        header = ",".join(CLEAN) + "\n"
+        for name, enc in (("Muñoz García", "cp1252"), ("شركة النور", "cp1256")):
+            data = (header + ",".join({**CLEAN, "buyer_name": name}.values()) + "\n").encode(enc)
+            with tempfile.NamedTemporaryFile("wb", suffix=".csv", delete=False) as fh:
+                fh.write(data)
+            p = subprocess.run([sys.executable, "-I", str(ENGINE), fh.name], capture_output=True, text=True)
+            self.assertEqual((p.returncode, json.loads(p.stdout)["file_encoding"]), (0, enc))
+        with tempfile.NamedTemporaryFile("wb", suffix=".csv", delete=False) as fh:
+            fh.write(b"\xef\xbb\xbf" + (header + ",".join(CLEAN.values()) + "\n").encode("utf-8"))
+        p = subprocess.run([sys.executable, "-I", str(ENGINE), fh.name], capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0)
+
     def test_transaction_type(self):
         self.assertIn("ibr-154-ae", rules(transaction_type=""))
         self.assertIn("ibr-154-ae", rules(transaction_type="0"))  # Excel turned 00000000 into a number
