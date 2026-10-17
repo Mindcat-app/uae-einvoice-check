@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 - 2026-10-17
 - Gaps on invoice-level fields are reported once per invoice, and lines of one invoice that disagree (or two invoices sharing a number) are flagged (`mc-header-mismatch`).
 - New checks: issue date format (`mc-date-format`), line amount in AED (`mc-aed-maths`), unit code (`ibr-023`, `ibr-cl-23`), credit note reason (`ibr-158-ae`, `ibr-001-ae`), VAT rate on reverse-charge lines (`aligned-ibrp-ae-05-ae`), and optional invoice totals (`mc-total-net`, `mc-total-vat`, `mc-total-gross`).
 - Item code gaps use the official ids `ibr-184-ae`, `ibr-185-ae` and `ibr-186-ae`.

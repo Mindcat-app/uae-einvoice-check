@@ -9,7 +9,7 @@ allowed-tools: Read, Glob, Grep, Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/engine/c
 This plugin checks data. It never signs, sends or submits an invoice, and it is not tax advice. Saudi (ZATCA) checks are not built yet: say so if asked.
 
 ## 1. Dates
-If you do not know the company's UAE revenue band (AED 50m or more, under AED 50m, or a government entity), ask. Then state the date to appoint an accredited service provider (ASP) and the go-live date for that band, from this table only, with the source: Ministerial Decision 244 of 2025, Article 5, as amended by Ministerial Decision 66 of 2026.
+If you do not know the company's UAE revenue band (AED 50m or more, under AED 50m, or a government entity), ask. Then state the date to appoint an accredited service provider (ASP) and the go-live date for that band, from this table only, with the source: Ministerial Decision 244 of 2025, Article 5, as amended by Ministerial Resolution No. 66 of 2026.
 
 | Group | Appoint an ASP by | Live from |
 | --- | --- | --- |
