@@ -90,6 +90,31 @@ class CheckUae(unittest.TestCase):
         self.assertEqual(rules(currency="USD", exchange_rate="3.6725", line_net_aed="734.50"), [])
         self.assertIn("mc-aed-maths", rules(currency="USD", exchange_rate="3.6725", line_net_aed="200"))
 
+    def test_invoice_totals(self):
+        two = [CLEAN, {**CLEAN, "line_id": "2"}]
+        ok = {"invoice_total_net": "400", "invoice_total_vat": "20", "invoice_total_gross": "420"}
+        self.assertEqual(run([{**r, **ok} for r in two])[0], 0)
+        bad = {"invoice_total_net": "399", "invoice_total_vat": "21", "invoice_total_gross": "421"}
+        code, out = run([{**r, **bad} for r in two])
+        self.assertEqual(sorted(g["rule"] for g in out["gaps"]), ["mc-total-gross", "mc-total-net", "mc-total-vat"])
+        self.assertEqual(run(two)[0], 0)  # no total columns, no check
+
+    def test_mask(self):
+        code, out = run([CLEAN, {**CLEAN, "line_id": "2", "seller_trn": "12345678901203"}], args=["--mask"])
+        values = [g["value"] for g in out["gaps"] if g["field"] == "seller_trn"]
+        self.assertTrue(values)
+        self.assertFalse(any("123456789" in v for v in values))
+        code, out = run([{**CLEAN, "seller_trn": "10000000002003"}], args=["--mask"])
+        self.assertIn("**********2003", [g["value"] for g in out["gaps"]])
+
+    def test_summary(self):
+        p = subprocess.run([sys.executable, "-I", str(ENGINE), str(ROOT / "samples" / "uae-sample.csv"), "--summary"],
+                           capture_output=True, text=True)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("Invoices with gaps: 2 of 4", p.stdout)
+        self.assertIn("ibr-132-ae", p.stdout)
+        self.assertEqual(p.stdout.strip().splitlines()[-1], "Help getting ready: mindcat.ai/contact")
+
     def test_issue_date(self):
         for bad in ("01/10/2026", "2026-02-30", "2026-1-5", "20261001"):
             self.assertIn("mc-date-format", rules(issue_date=bad))

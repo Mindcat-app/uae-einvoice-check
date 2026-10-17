@@ -5,7 +5,10 @@ the README links the source). Checks with an "mc-" id are our own
 data-quality checks with no single Schematron rule. This is a pre-check on source data, not a
 replacement for validating the final UBL XML, and not tax advice.
 
-Usage: python3 -I check_uae.py invoices.csv [--all]
+Usage: python3 -I check_uae.py invoices.csv [--all] [--mask] [--summary]
+  --all      list every gap, not only the first 50
+  --mask     hide all but the last 4 characters of TRNs and TINs in the output
+  --summary  print a short text summary instead of JSON
 Exit codes: 0 no gaps, 1 gaps found, 2 the file could not be checked.
 """
 import csv
@@ -27,11 +30,14 @@ ITEM_KINDS = {"goods": "G", "g": "G", "service": "S", "services": "S", "s": "S",
 REQUIRED = ["invoice_number", "issue_date", "type_code", "currency", "seller_name", "buyer_name",
             "line_id", "item_name", "quantity", "unit_price", "line_net", "vat_category"]
 NUMERIC = ["quantity", "unit_price", "base_quantity", "line_allowance", "line_charge", "line_net",
-           "vat_rate", "line_vat", "line_net_aed", "exchange_rate"]
+           "vat_rate", "line_vat", "line_net_aed", "exchange_rate", "invoice_total_net", "invoice_total_vat",
+           "invoice_total_gross"]
 # Every invoice-level field must be listed here: gaps on these are reported once per invoice (see dedupe).
 HEADER = ["invoice_number", "issue_date", "type_code", "currency", "exchange_rate", "seller_name", "seller_trn",
           "seller_tin", "seller_emirate", "seller_country", "buyer_name", "buyer_trn", "buyer_emirate",
-          "buyer_country", "preceding_invoice", "credit_reason"]
+          "buyer_country", "preceding_invoice", "credit_reason", "invoice_total_net", "invoice_total_vat",
+          "invoice_total_gross"]
+MASKED = ["seller_trn", "buyer_trn", "seller_tin"]
 DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 CODE_FIELDS = ["type_code", "currency", "seller_emirate", "seller_country", "buyer_emirate", "buyer_country", "credit_reason"]
 UNIT = re.compile(r"^[A-Z0-9]{2,3}$")
@@ -197,11 +203,48 @@ def check_invoices(rows):
                 gaps.append({"invoice": i, "line": "", "field": f, "value": " | ".join(str(k) or "(blank)" for k in seen),
                              "rule": "mc-header-mismatch", "fix": f"Lines of one invoice must agree on {f}"})
         r = lines[0]
+        gaps += check_totals(i, r, lines)
         if ((r.get("buyer_country") or "").strip().upper() in ("", "AE") and not (r.get("buyer_trn") or "").strip()
                 and any((x.get("vat_category") or "").strip() == "S" for x in lines)):
             warnings.append({"invoice": i, "field": "buyer_trn", "rule": "mc-buyer-trn-blank",
                              "note": "UAE buyer with no TRN on a standard-rated invoice: fine for a consumer, a gap for a VAT-registered business"})
     return gaps, warnings
+
+
+def check_totals(i, r, lines):
+    """Optional invoice_total_* columns: compare with the sums of the lines (blank line_vat counts as 0)."""
+    gaps = []
+    nets = [dec(x.get("line_net")) for x in lines]
+    vats = [dec(x.get("line_vat")) if (x.get("line_vat") or "").strip() else Decimal(0) for x in lines]
+    net = None if None in nets else sum(nets)
+    vat = None if None in vats else sum(vats)
+    gross = None if None in (net, vat) else net + vat
+    for f, want, rule in (("invoice_total_net", net, "mc-total-net"), ("invoice_total_vat", vat, "mc-total-vat"),
+                          ("invoice_total_gross", gross, "mc-total-gross")):
+        got = dec(r.get(f))
+        if None not in (got, want) and abs(got - want) > Decimal("0.01"):
+            gaps.append({"invoice": i, "line": "", "field": f, "value": r.get(f, ""), "rule": rule,
+                         "fix": f"The lines add up to {want:.2f}, not {got}"})
+    return gaps
+
+
+def mask(v):
+    v = str(v)
+    if v == "(blank)":
+        return v
+    return "*" * max(len(v) - 4, 0) + v[-4:] if len(v) > 4 else "*" * len(v)
+
+
+def summary(out):
+    text = [f"Checked {out['lines']} lines in {out['invoices']} invoices ({out['file_encoding']}).",
+            f"Invoices with gaps: {out['invoices_with_gaps']} of {out['invoices']}. Gaps: {out['gaps_total']}."]
+    text += ["Top rules:"] if out["by_rule"] else []
+    text += [f"  {b['rule']}: {b['gaps']} gap(s) in {b['invoices']} invoice(s)" for b in out["by_rule"][:10]]
+    missing = out["coverage"]["not_in_sample"]
+    text.append("Not in this sample: " + (", ".join(missing) if missing else "none of the common cases are missing"))
+    text.append(f"Warnings (not gaps): {len(out['warnings'])}")
+    text.append("Help getting ready: mindcat.ai/contact")
+    return "\n".join(text)
 
 
 def dedupe(gaps):
@@ -253,16 +296,17 @@ def load(path):
 
 
 def main(argv):
-    if len(argv) < 2:
-        print("usage: python3 -I check_uae.py invoices.csv [--all]", file=sys.stderr)
+    files = [a for a in argv[1:] if not a.startswith("--")]
+    if len(files) != 1:
+        print("usage: python3 -I check_uae.py invoices.csv [--all] [--mask] [--summary]", file=sys.stderr)
         return 2
     try:
-        rows, enc = load(argv[1])
+        rows, enc = load(files[0])
     except (OSError, ValueError, csv.Error) as e:
-        print(f"could not check {argv[1]}: {e}", file=sys.stderr)
+        print(f"could not check {files[0]}: {e}", file=sys.stderr)
         return 2
     if not rows:
-        print(f"{argv[1]} has no invoice lines, so nothing was checked", file=sys.stderr)
+        print(f"{files[0]} has no invoice lines, so nothing was checked", file=sys.stderr)
         return 2
     inv_gaps, warnings = check_invoices(rows)
     gaps = dedupe([g for r in rows for g in check_row(r)]) + inv_gaps
@@ -272,14 +316,18 @@ def main(argv):
         invoices_by_rule[g["rule"]][g["invoice"]] = True
     invoices = {inv(r) for r in rows}
     shown = gaps if "--all" in argv else gaps[:SHOWN]
-    print(json.dumps({
+    if "--mask" in argv:
+        shown = [{**g, "value": " | ".join(mask(x) for x in str(g["value"]).split(" | "))} if g["field"] in MASKED else g
+                 for g in shown]
+    out = {
         "file_encoding": enc, "lines": len(rows), "invoices": len(invoices),
         "invoices_with_gaps": len({g["invoice"] for g in gaps}),
         "gaps_total": len(gaps), "gaps_shown": len(shown), "truncated": len(shown) < len(gaps),
         "by_rule": [{"rule": k, "gaps": v, "invoices": len(invoices_by_rule[k])}
                     for k, v in sorted(by_rule.items(), key=lambda kv: -kv[1])],
         "coverage": coverage(rows), "warnings": warnings,
-        "gaps": shown}, indent=2, ensure_ascii=False, default=str))
+        "gaps": shown}
+    print(summary(out) if "--summary" in argv else json.dumps(out, indent=2, ensure_ascii=False, default=str))
     return 1 if gaps else 0
 
 
