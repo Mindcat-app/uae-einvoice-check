@@ -1,7 +1,7 @@
 """UAE e-invoice data checks for CSV exports (one row per invoice line).
 
-Each check names the PINT AE v1.0.4 rule it mirrors (ibr-...-ae, from the official Schematron in
-https://docs.peppol.eu/poac/ae/pint-ae/resources.zip). Checks with an "mc-" id are our own
+Each check names the PINT AE v1.0.4 rule it mirrors (ibr-...-ae, from the official Schematron;
+the README links the source). Checks with an "mc-" id are our own
 data-quality checks with no single Schematron rule. This is a pre-check on source data, not a
 replacement for validating the final UBL XML, and not tax advice.
 
