@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|mcp__.*",
+        "hooks": [
+          { "type": "command", "command": "python3", "args": ["-I", "${CLAUDE_PLUGIN_ROOT}/hooks/no_submit_guard.py"], "onFailure": "block" }
+        ]
+      }
+    ]
+  }
+}
