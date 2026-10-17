@@ -1,7 +1,8 @@
 {
   "name": "mindcat",
   "owner": {
-    "name": "Mindcat"
+    "name": "Mindcat",
+    "email": "apps@mindcat.ai"
   },
   "description": "Mindcat plugins",
   "plugins": [
