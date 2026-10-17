@@ -15,7 +15,7 @@ UAE finance teams in the second wave (revenue under AED 50m: appoint an accredit
 - **Local check engine** (`engine/check_uae.py`, Python standard library only). It reads the CSV the user points at and prints the gaps. It makes no network calls.
 - **Salesforce reads** (optional) through the user's own read-only SOQL tools, to build the sample.
 - **Nothing is sent to Mindcat.** There is no hosted server yet and no telemetry.
-- **Guard hook** (`hooks/no_submit_guard.py`): a keyword backstop, not a sandbox. While the plugin is enabled it blocks, in every Claude Code session: shell HTTP writes (curl, wget, httpie POST/PUT/PATCH/DELETE), Salesforce CLI writes, signing commands, and send- or change-type tools on invoice, tax, ERP or Salesforce MCP servers. It reads only the command or tool name, never file contents, and blocks when it can't read a call. A determined script can get round it, so give the plugin read-only access as well. To run a blocked command for other work, disable the plugin with `/plugin disable mindcat-einvoice-check`. The hook runs in Claude Code and Cowork, not in Cursor.
+- **No hooks.** The plugin adds no hooks, so it never runs on your other commands or tools. It stays read-only because its engine has no network or write code and its skills only read; for Salesforce, sign in as a read-only user.
 
 ## Data handling
 The invoice data you check (customer names, TRNs, addresses, amounts) is read on your machine and passes through your AI client's conversation, under that client's own data terms. Any CSV the plugin writes stays on your disk. Mindcat receives nothing.
@@ -33,7 +33,6 @@ Checks marked `ibr-...-ae` mirror rules in the official PINT AE v1.0.4 Schematro
 | `skills/einvoice-from-export` | CSV or Excel exports |
 | `engine/check_uae.py` | UAE checks for CSV |
 | `samples/uae-sample.csv` | 4 invoices: 2 clean, 2 with gaps |
-| `hooks/no_submit_guard.py` | No-send guard |
 | `tests/` | `python3 -I -m unittest discover -s tests` |
 
 ## Try it
@@ -43,8 +42,6 @@ Install the plugin, then ask Claude:
 - "When do we need an accredited service provider for UAE e-invoicing, and what should we fix in our data first?"
 
 To run the check by hand: `python3 -I engine/check_uae.py samples/uae-sample.csv`
-
-Needs Claude Code 2.1.295 or later for the guard hook.
 
 ## Support
 - Email: apps@mindcat.ai
