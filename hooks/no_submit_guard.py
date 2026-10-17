@@ -7,7 +7,18 @@ import json
 import re
 import sys
 
-HTTP_WRITE = re.compile(r"(?<![\w-])(curl|wget|http|https|xh|httpie)(?![\w-]).*?(\s-X\s*(POST|PUT|PATCH|DELETE)\b|--request\s+(POST|PUT|PATCH|DELETE)\b|\s-d\b|--data|\s-F\b|--form|--upload-file|\s-T\b|--post-(data|file)|\s(POST|PUT|PATCH|DELETE)\s)", re.I | re.S)
+# Command-line HTTP clients, and the flags that make them write.
+HTTP_CLIENTS = {"curl", "wget", "http", "https", "xh", "httpie"}
+HTTP_WRITE_FLAG = re.compile(r"(\s-X\s*(POST|PUT|PATCH|DELETE)\b|--request\s+(POST|PUT|PATCH|DELETE)\b|\s-d\b|--data|\s-F\b|--form|--upload-file|\s-T\b|--post-(data|file)|\s(POST|PUT|PATCH|DELETE)\s)", re.I)
+
+
+def http_write(cmd):
+    words = re.findall(r"[\w.-]+", cmd)
+    if not any(w.lower() in HTTP_CLIENTS for w in words):
+        return False
+    return bool(HTTP_WRITE_FLAG.search(" " + cmd + " "))
+
+
 SF_WRITE = re.compile(r"(?<![\w-])sf(dx)?(?![\w-])\s+.*?\b(data\s+(create|update|delete|upsert|import)|apex\s+run|project\s+deploy)\b", re.I | re.S)
 SIGN = re.compile(r"(?<![\w-])openssl(?![\w-]).*\s-sign\b", re.I | re.S)
 MCP_WRITE = re.compile(r"(submit|send|transmit|clear|report|sign|post|create|update|upsert|delete|issue)", re.I)
@@ -27,7 +38,9 @@ except Exception:
 
 if name == "Bash":
     cmd = str(tin.get("command", ""))
-    for rx, why in ((HTTP_WRITE, "HTTP writes are blocked"), (SF_WRITE, "Salesforce writes are blocked"), (SIGN, "signing is blocked")):
+    if http_write(cmd):
+        block("HTTP writes are blocked")
+    for rx, why in ((SF_WRITE, "Salesforce writes are blocked"), (SIGN, "signing is blocked")):
         if rx.search(cmd):
             block(why)
 elif name.startswith("mcp__"):
