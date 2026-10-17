@@ -5,12 +5,12 @@ the README links the source). Checks with an "mc-" id are our own
 data-quality checks with no single Schematron rule. This is a pre-check on source data, not a
 replacement for validating the final UBL XML, and not tax advice.
 
-Usage: python3 -I check_uae.py invoices.csv [--all] [--mask] [--summary]
-  --all      list every gap, not only the first 50
-  --mask     hide all but the last 4 characters of TRNs and TINs in the output
-  --summary  print a short text summary instead of JSON
+Usage: python3 -I check_uae.py <invoices.csv | .xlsx | .xml | folder of .xml> [options]
+       python3 -I check_uae.py customers.csv --master customers   (or items.csv --master items)
+Run with --help for the options. It only reads, except --report and --handoff, which write where you say.
 Exit codes: 0 no gaps, 1 gaps found, 2 the file could not be checked.
 """
+import argparse
 import csv
 import datetime
 import json
@@ -41,7 +41,7 @@ HEADER = ["invoice_number", "issue_date", "type_code", "currency", "exchange_rat
           "buyer_country", "preceding_invoice", "credit_reason", "invoice_total_net", "invoice_total_vat",
           "invoice_total_gross", "transaction_type", "seller_endpoint", "seller_endpoint_scheme", "buyer_endpoint",
           "buyer_endpoint_scheme"]
-MASKED = ["seller_trn", "buyer_trn", "seller_tin"]
+MASKED = ["seller_trn", "buyer_trn", "seller_tin", "trn", "tin"]
 DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 CODE_FIELDS = ["type_code", "currency", "seller_emirate", "seller_country", "buyer_emirate", "buyer_country", "credit_reason"]
 UNIT = re.compile(r"^[A-Z0-9]{2,3}$")
@@ -136,12 +136,7 @@ def check_row(r):
     if get("seller_country").upper() in ("", "AE") and get("seller_emirate") not in EMIRATES:
         gap("seller_emirate", "ibr-128-ae", "Use AUH, DXB, SHJ, UAQ, FUJ, AJM or RAK (capitals)")
 
-    # Buyer: UAE rules apply only when the buyer is in the UAE (blank country is read as AE)
-    if get("buyer_country").upper() in ("", "AE"):
-        if get("buyer_trn") and not TRN.match(get("buyer_trn")):
-            gap("buyer_trn", "ibr-132-ae", "Buyer TRN must be 15 digits, start with 1 and end with 03")
-        if get("buyer_emirate") and get("buyer_emirate") not in EMIRATES:
-            gap("buyer_emirate", "ibr-128-ae", "Use AUH, DXB, SHJ, UAQ, FUJ, AJM or RAK (capitals)")
+    party_gaps(get, gap, "buyer_trn", "buyer_emirate", "buyer_country", need_emirate=False)
 
     # VAT category rules
     rate, vat, net = dec(get("vat_rate")), dec(get("line_vat")), dec(get("line_net"))
@@ -195,7 +190,22 @@ def check_row(r):
         if None not in (net, fx, aed) and abs(net * fx - aed) > Decimal("0.01"):
             gap("line_net_aed", "mc-aed-maths", f"line_net x exchange_rate (AED per 1 {cur}) = {net * fx:.2f}, not {aed}")
 
-    # Unit of measure (UN/ECE Rec 20)
+    item_gaps(get, gap)
+    return gaps
+
+
+def party_gaps(get, gap, trn, emirate, country, need_emirate):
+    """Buyer or customer: UAE rules apply only when the country is AE (blank is read as AE)."""
+    if get(country).upper() not in ("", "AE"):
+        return
+    if get(trn) and not TRN.match(get(trn)):
+        gap(trn, "ibr-132-ae", "TRN must be 15 digits, start with 1 and end with 03")
+    if (need_emirate or get(emirate)) and get(emirate) not in EMIRATES:
+        gap(emirate, "ibr-128-ae", "Use AUH, DXB, SHJ, UAQ, FUJ, AJM or RAK (capitals)")
+
+
+def item_gaps(get, gap):
+    """Unit of measure and item codes, for invoice lines and for an item list."""
     if not get("unit_code"):
         gap("unit_code", "ibr-023", "Every line needs a unit code (UN/ECE Rec 20), such as EA, HUR, DAY, MON or KGM")
     elif not UNIT.match(get("unit_code")):
@@ -212,6 +222,31 @@ def check_row(r):
     for f, name in (("hs_code", "an HS code"), ("sac_code", "a SAC code")):
         if kind == "B" and not get(f):
             gap(f, "ibr-186-ae", f"Items that are both goods and services need {name}")
+
+
+MASTER = {"customers": ["customer_name", "country"], "items": ["item_name", "item_kind", "unit_code", "vat_category"]}
+
+
+def check_master(r, kind):
+    """One customer or item record, with the same rule functions as invoice lines."""
+    gaps = []
+    get = lambda f: (r.get(f) or "").strip()
+    label = get("customer_name" if kind == "customers" else "item_name") or f"(row {r['_row']})"
+
+    def gap(field, rule, fix):
+        gaps.append({"record": label, "line": "", "field": field, "value": r.get(field, ""), "rule": rule, "fix": fix})
+
+    for f in MASTER[kind]:
+        if not get(f):
+            gap(f, "mc-missing", f"{f} is empty")
+    if kind == "customers":
+        party_gaps(get, gap, "trn", "emirate", "country", need_emirate=True)
+        if get("tin") and not TIN.match(get("tin")):
+            gap("tin", "mc-tin-format", "TIN must be 10 digits starting with 1")
+    else:
+        item_gaps(get, gap)
+        if get("vat_category") and get("vat_category") not in VAT_CATEGORIES:
+            gap("vat_category", "ibr-139-ae", "Use S, Z, E, O, AE or N (capitals)")
     return gaps
 
 
@@ -273,13 +308,16 @@ def mask(v):
 
 
 def summary(out):
-    text = [f"Checked {out['lines']} lines in {out['invoices']} invoices ({out['file_encoding']}).",
-            f"Invoices with gaps: {out['invoices_with_gaps']} of {out['invoices']}. Gaps: {out['gaps_total']}."]
+    unit = "records" if "master" in out else "invoices"
+    head = f"{out[unit]} {out['master']} records" if "master" in out else f"{out['lines']} lines in {out['invoices']} invoices"
+    text = [f"Checked {head} ({out['file_encoding']}).",
+            f"{unit.capitalize()} with gaps: {out[unit + '_with_gaps']} of {out[unit]}. Gaps: {out['gaps_total']}."]
     text += ["Top rules:"] if out["by_rule"] else []
-    text += [f"  {b['rule']}: {b['gaps']} gap(s) in {b['invoices']} invoice(s)" for b in out["by_rule"][:10]]
-    missing = out["coverage"]["not_in_sample"]
-    text.append("Not in this sample: " + (", ".join(missing) if missing else "none of the common cases are missing"))
-    text.append(f"Warnings (not gaps): {len(out['warnings'])}")
+    text += [f"  {b['rule']}: {b['gaps']} gap(s) in {b[unit]} {unit[:-1]}(s)" for b in out["by_rule"][:10]]
+    if "coverage" in out:
+        missing = out["coverage"]["not_in_sample"]
+        text.append("Not in this sample: " + (", ".join(missing) if missing else "none of the common cases are missing"))
+        text.append(f"Warnings (not gaps): {len(out['warnings'])}")
     text.append("Help getting ready: mindcat.ai/contact")
     return "\n".join(text)
 
@@ -467,39 +505,114 @@ def load(path):
     return load_csv(path)
 
 
+FIELD_MAP = [
+    ("invoice_number", "ibt-001", "Invoice number"), ("issue_date", "ibt-002", "Issue date, YYYY-MM-DD"),
+    ("type_code", "ibt-003", "380, 480, 381 or 81"), ("currency", "ibt-005", "Invoice currency"),
+    ("exchange_rate", "BTAE-04", "AED per 1 unit of the invoice currency"), ("transaction_type", "BTAE-02", "8 flags of 0 or 1"),
+    ("seller_name", "ibt-027", ""), ("seller_trn", "ibt-031", "VAT TRN"), ("seller_tin", "ibt-032", "TIN when there is no TRN"),
+    ("seller_endpoint", "ibt-034", "Peppol electronic address"), ("seller_endpoint_scheme", "ibt-034-1", "0235 in the UAE"),
+    ("seller_emirate", "ibt-039", "AUH, DXB, SHJ, UAQ, FUJ, AJM or RAK"), ("seller_country", "ibt-040", ""),
+    ("buyer_name", "ibt-044", ""), ("buyer_trn", "ibt-048", "Buyer VAT TRN"),
+    ("buyer_endpoint", "ibt-049", "Peppol electronic address"), ("buyer_endpoint_scheme", "ibt-049-1", "0235 in the UAE"),
+    ("buyer_emirate", "ibt-054", ""), ("buyer_country", "ibt-055", ""),
+    ("preceding_invoice", "ibt-025", "Credit notes"), ("credit_reason", "BTAE-03", "Credit notes"),
+    ("line_id", "ibt-126", ""), ("quantity", "ibt-129", ""), ("unit_code", "ibt-130", "UN/ECE Rec 20"),
+    ("line_net", "ibt-131", ""), ("line_allowance", "ibt-136", ""), ("line_charge", "ibt-141", ""),
+    ("unit_price", "ibt-146", "Net price"), ("base_quantity", "ibt-149", ""),
+    ("vat_category", "ibt-151", ""), ("vat_rate", "ibt-152", ""), ("item_name", "ibt-153", ""),
+    ("hs_code", "ibt-158", "Item classification (HS)"), ("item_kind", "BTAE-13", "Goods, services or both"),
+    ("sac_code", "BTAE-17", "Service accounting code"), ("exemption_reason", "ibt-186", "Exempt lines"),
+    ("line_vat", "BTAE-08", "VAT line amount in AED"),
+    ("line_net_aed", "BTAE-10 (input)", "Line net in AED; your provider derives the amount payable in AED from it"),
+    ("invoice_total_net", "ibt-106", "Optional"), ("invoice_total_vat", "ibt-110", "Optional"),
+    ("invoice_total_gross", "ibt-112", "Optional")]
+
+
+def write_report(path, gaps):
+    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+        w = csv.writer(fh)
+        w.writerow(["invoice", "line", "field", "value", "rule", "fix", "owner", "status"])
+        for g in gaps:
+            w.writerow([g.get("invoice", g.get("record", "")), g["line"], g["field"], g["value"], g["rule"], g["fix"], "", ""])
+
+
+def write_handoff(folder, out):
+    """Markdown for the chosen provider: field map, gap counts and coverage. No names, numbers or amounts."""
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "field-map.md"), "w", encoding="utf-8") as fh:
+        fh.write("# Field map: our columns to PINT AE\n\n| Column | PINT AE | Note |\n| --- | --- | --- |\n")
+        fh.writelines(f"| `{c}` | {i} | {n} |\n" for c, i, n in FIELD_MAP)
+    c = out["coverage"]
+    lines = ["# E-invoicing readiness: data check", "",
+             f"Checked {out['lines']} lines in {out['invoices']} invoices; {out['invoices_with_gaps']} have gaps "
+             f"({out['gaps_total']} in all). This checks source data, not the final XML.", "",
+             "| Rule | Field | Gaps | Invoices |", "| --- | --- | --- | --- |"]
+    lines += [f"| {b['rule']} | {', '.join(b['fields'])} | {b['gaps']} | {b['invoices']} |" for b in out["by_rule"]]
+    lines += ["", "## Sample coverage", "", f"- Invoices by type: {c['invoices_by_type_code']}",
+              f"- Lines by VAT category: {c['lines_by_vat_category']}", f"- Invoices by currency: {c['invoices_by_currency']}",
+              f"- Not in the sample: {', '.join(c['not_in_sample']) or 'none of the common cases'}",
+              f"- Warnings to confirm (not gaps): {len(out['warnings'])}", ""]
+    with open(os.path.join(folder, "readiness.md"), "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
+
+
 def main(argv):
-    files = [a for a in argv[1:] if not a.startswith("--")]
-    if len(files) != 1:
-        print("usage: python3 -I check_uae.py invoices.csv [--all] [--mask] [--summary]", file=sys.stderr)
-        return 2
+    ap = argparse.ArgumentParser(prog="check_uae.py", allow_abbrev=False,
+                                 description="UAE e-invoice (PINT AE) data checks. Reads CSV, .xlsx or UBL XML.")
+    ap.add_argument("path", help="CSV, .xlsx, .xml or a folder of .xml files")
+    ap.add_argument("--all", action="store_true", help=f"list every gap, not only the first {SHOWN}")
+    ap.add_argument("--mask", action="store_true", help="hide all but the last 4 characters of TRNs and TINs")
+    ap.add_argument("--summary", action="store_true", help="print a short text summary instead of JSON")
+    ap.add_argument("--master", choices=list(MASTER), help="check a customer or item list instead of invoices")
+    ap.add_argument("--report", metavar="GAPS.CSV", help="also write every gap to this CSV, one row per gap")
+    ap.add_argument("--handoff", metavar="FOLDER", help="also write a field map and gap summary for your provider")
+    a = ap.parse_args(argv[1:])
     try:
-        rows, enc = load(files[0])
+        rows, enc = load(a.path)
     except (OSError, ValueError, csv.Error) as e:
-        print(f"could not check {files[0]}: {e}", file=sys.stderr)
+        print(f"could not check {a.path}: {e}", file=sys.stderr)
+        return 2
+    if a.master and enc == "xml":
+        print("--master reads a CSV or .xlsx list of customers or items, not invoice XML", file=sys.stderr)
         return 2
     if not rows:
-        print(f"{files[0]} has no invoice lines, so nothing was checked", file=sys.stderr)
+        print(f"{a.path} has no rows, so nothing was checked", file=sys.stderr)
         return 2
-    inv_gaps, warnings = check_invoices(rows)
-    gaps = dedupe([g for r in rows for g in check_row(r)]) + inv_gaps
-    by_rule, invoices_by_rule = defaultdict(int), defaultdict(dict)
+    if a.master:
+        gaps, warnings = [g for r in rows for g in check_master(r, a.master)], []
+    else:
+        inv_gaps, warnings = check_invoices(rows)
+        gaps = dedupe([g for r in rows for g in check_row(r)]) + inv_gaps
+    who = lambda g: g.get("invoice", g.get("record"))
+    by_rule, invoices_by_rule, fields_by_rule = defaultdict(int), defaultdict(dict), defaultdict(dict)
     for g in gaps:
         by_rule[g["rule"]] += 1
-        invoices_by_rule[g["rule"]][g["invoice"]] = True
-    invoices = {inv(r) for r in rows}
-    shown = gaps if "--all" in argv else gaps[:SHOWN]
-    if "--mask" in argv:
-        shown = [{**g, "value": " | ".join(mask(x) for x in str(g["value"]).split(" | "))} if g["field"] in MASKED else g
-                 for g in shown]
-    out = {
-        "file_encoding": enc, "lines": len(rows), "invoices": len(invoices),
-        "invoices_with_gaps": len({g["invoice"] for g in gaps}),
-        "gaps_total": len(gaps), "gaps_shown": len(shown), "truncated": len(shown) < len(gaps),
-        "by_rule": [{"rule": k, "gaps": v, "invoices": len(invoices_by_rule[k])}
-                    for k, v in sorted(by_rule.items(), key=lambda kv: -kv[1])],
-        "coverage": coverage(rows), "warnings": warnings,
-        "gaps": shown}
-    print(summary(out) if "--summary" in argv else json.dumps(out, indent=2, ensure_ascii=False, default=str))
+        invoices_by_rule[g["rule"]][who(g)] = True
+        fields_by_rule[g["rule"]][g["field"]] = True
+    if a.mask:
+        gaps = [{**g, "value": " | ".join(mask(x) for x in str(g["value"]).split(" | "))} if g["field"] in MASKED else g
+                for g in gaps]
+    shown = gaps if a.all else gaps[:SHOWN]
+    unit = "records" if a.master else "invoices"
+    out = {"file_encoding": enc, "lines": len(rows), unit: len(rows) if a.master else len({inv(r) for r in rows}),
+           f"{unit}_with_gaps": len({who(g) for g in gaps}),
+           "gaps_total": len(gaps), "gaps_shown": len(shown), "truncated": len(shown) < len(gaps),
+           "by_rule": [{"rule": k, "gaps": v, unit: len(invoices_by_rule[k]), "fields": list(fields_by_rule[k])}
+                       for k, v in sorted(by_rule.items(), key=lambda kv: -kv[1])]}
+    if a.master:
+        out = {"master": a.master, **out}
+    else:
+        out.update({"coverage": coverage(rows), "warnings": warnings})
+    out["gaps"] = shown
+    try:
+        if a.report:
+            write_report(a.report, gaps)
+        if a.handoff and not a.master:
+            write_handoff(a.handoff, out)
+    except OSError as e:
+        print(f"could not write the report: {e}", file=sys.stderr)
+        return 2
+    print(summary(out) if a.summary else json.dumps(out, indent=2, ensure_ascii=False, default=str))
     return 1 if gaps else 0
 
 
