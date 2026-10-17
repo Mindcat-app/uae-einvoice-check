@@ -18,5 +18,7 @@
     "Salesforce"
   ],
   "privacyPolicyUrl": "https://mindcat.ai/privacy-policy",
-  "supportUrl": "https://mindcat.ai/contact"
+  "supportUrl": "https://mindcat.ai/contact",
+  "displayName": "UAE E-invoicing Readiness Check",
+  "documentationUrl": "https://github.com/Mindcat-app/uae-einvoice-check#readme"
 }
