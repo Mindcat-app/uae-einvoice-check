@@ -120,6 +120,10 @@ class CheckUae(unittest.TestCase):
         # Two different invoices that share one number
         code, out = run([CLEAN, {**CLEAN, "seller_name": "Other LLC", "issue_date": "2026-10-05"}])
         self.assertEqual(sorted(g["field"] for g in out["gaps"] if g["rule"] == "mc-header-mismatch"), ["issue_date", "seller_name"])
+        # Same value written differently is not a mismatch
+        usd = {**CLEAN, "currency": "USD", "exchange_rate": "3.6725", "line_net_aed": "734.50"}
+        code, out = run([usd, {**usd, "line_id": "2", "currency": "usd", "exchange_rate": "3.67250"}])
+        self.assertEqual(code, 0)
 
     def test_coverage_and_warnings(self):
         code, out = run([CLEAN, {**CLEAN, "invoice_number": "INV-2", "buyer_trn": ""}])
@@ -127,7 +131,7 @@ class CheckUae(unittest.TestCase):
         c = out["coverage"]
         self.assertEqual((c["invoices_by_type_code"], c["lines_by_vat_category"], c["invoices_by_currency"]),
                          ({"380": 2}, {"S": 2}, {"AED": 2}))
-        self.assertEqual(c["not_in_sample"], ["credit note (381)", "zero-rated (Z)", "exempt (E)", "reverse charge (AE)", "non-AED currency"])
+        self.assertEqual(c["not_in_sample"], ["credit note (381 or 81)", "zero-rated (Z)", "exempt (E)", "reverse charge (AE)", "non-AED currency"])
         self.assertEqual([(w["invoice"], w["rule"]) for w in out["warnings"]], [("INV-2", "mc-buyer-trn-blank")])
 
     def test_empty_and_header_only_files_fail_loudly(self):
@@ -136,6 +140,18 @@ class CheckUae(unittest.TestCase):
 
     def test_duplicate_headers_fail_loudly(self):
         self.assertEqual(run(text="Invoice_Number,invoice_number\nINV-1,INV-2\n")[0], 2)
+
+    def test_blank_header_cells_are_ignored(self):
+        keys = list(CLEAN)
+        text = ",".join(keys) + ",,\n" + ",".join(CLEAN[k] for k in keys) + ",,\n"
+        self.assertEqual(run(text=text)[0], 0)
+
+    def test_coverage_credit_and_blank_currency(self):
+        code, out = run([{**CLEAN, "currency": ""}, {**CLEAN, "invoice_number": "CN-1", "type_code": "81",
+                                                     "vat_category": "Z", "vat_rate": "0", "line_vat": "0", "preceding_invoice": "INV-1"}])
+        missing = out["coverage"]["not_in_sample"]
+        self.assertIn("non-AED currency", missing)
+        self.assertNotIn("credit note (381 or 81)", missing)
 
     def test_headers_are_normalised(self):
         code, out = run(text="Invoice_Number , LINE_ID\nINV-1,1\n")

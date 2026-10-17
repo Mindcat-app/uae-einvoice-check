@@ -28,14 +28,16 @@ REQUIRED = ["invoice_number", "issue_date", "type_code", "currency", "seller_nam
             "line_id", "item_name", "quantity", "unit_price", "line_net", "vat_category"]
 NUMERIC = ["quantity", "unit_price", "base_quantity", "line_allowance", "line_charge", "line_net",
            "vat_rate", "line_vat", "line_net_aed", "exchange_rate"]
+# Every invoice-level field must be listed here: gaps on these are reported once per invoice (see dedupe).
 HEADER = ["invoice_number", "issue_date", "type_code", "currency", "exchange_rate", "seller_name", "seller_trn",
           "seller_tin", "seller_emirate", "seller_country", "buyer_name", "buyer_trn", "buyer_emirate",
           "buyer_country", "preceding_invoice", "credit_reason"]
 DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+CODE_FIELDS = ["type_code", "currency", "seller_emirate", "seller_country", "buyer_emirate", "buyer_country", "credit_reason"]
 UNIT = re.compile(r"^[A-Z0-9]{2,3}$")
-SCENARIOS = [("credit note (381)", lambda c: c["type_code"].get("381")), ("zero-rated (Z)", lambda c: c["vat_category"].get("Z")),
+SCENARIOS = [("credit note (381 or 81)", lambda c: any(c["type_code"].get(t) for t in CREDIT_TYPES)), ("zero-rated (Z)", lambda c: c["vat_category"].get("Z")),
              ("exempt (E)", lambda c: c["vat_category"].get("E")), ("reverse charge (AE)", lambda c: c["vat_category"].get("AE")),
-             ("non-AED currency", lambda c: any(k != "AED" for k in c["currency"]))]
+             ("non-AED currency", lambda c: any(k not in ("AED", "(blank)") for k in c["currency"]))]
 SHOWN = 50
 
 
@@ -80,10 +82,10 @@ def check_row(r):
         gap("type_code", "ibr-cl-01", "Invoice type must be 380 or 480; credit note 381 or 81")
     if t in CREDIT_TYPES and not get("preceding_invoice") and get("credit_reason") != "VD":
         gap("preceding_invoice", "ibr-055-ae", "Credit notes need the original invoice number")
-    if t == "381" and not get("credit_reason"):
+    if t == "381" and not get("credit_reason"):  # the official ibr-158-ae test checks 381 only, not 81
         gap("credit_reason", "ibr-158-ae", "Credit notes (381) need a credit note reason code, such as DL8.61.1.A or VD")
     if get("credit_reason") and get("credit_reason") not in CREDIT_REASONS:
-        gap("credit_reason", "ibr-001-ae", "Use DL8.61.1.A, DL8.61.1.B, DL8.61.1.C, DL8.61.1.D, DL8.61.1.E or VD")
+        gap("credit_reason", "ibr-001-ae", "Use DL8.61.1.A, DL8.61.1.B, DL8.61.1.C, DL8.61.1.D, DL8.61.1.E or VD (capitals)")
     if t in OUT_OF_SCOPE_TYPES and cat and cat not in {"E", "O", "Z"}:
         gap("vat_category", "ibr-122-ae", "Type 480 and 81 lines can only be E, O or Z")
 
@@ -175,6 +177,14 @@ def check_row(r):
     return gaps
 
 
+def norm(f, v):
+    """A header value as compared across lines: trimmed, codes in capitals, numbers by value."""
+    v = (v or "").strip()
+    if f in CODE_FIELDS:
+        return v.upper()
+    return dec(v) if f in NUMERIC and dec(v) is not None else v
+
+
 def check_invoices(rows):
     """Per-invoice checks: header fields that differ between lines, and warnings that are not gaps."""
     gaps, warnings, by_inv = [], [], defaultdict(list)
@@ -182,9 +192,9 @@ def check_invoices(rows):
         by_inv[inv(r)].append(r)
     for i, lines in by_inv.items():
         for f in HEADER:
-            seen = {(r.get(f) or "").strip(): True for r in lines}
+            seen = {norm(f, r.get(f)): True for r in lines}
             if len(seen) > 1:
-                gaps.append({"invoice": i, "line": "", "field": f, "value": " | ".join(k or "(blank)" for k in seen),
+                gaps.append({"invoice": i, "line": "", "field": f, "value": " | ".join(str(k) or "(blank)" for k in seen),
                              "rule": "mc-header-mismatch", "fix": f"Lines of one invoice must agree on {f}"})
         r = lines[0]
         if ((r.get("buyer_country") or "").strip().upper() in ("", "AE") and not (r.get("buyer_trn") or "").strip()
@@ -227,13 +237,13 @@ def load(path):
         try:
             with open(path, newline="", encoding=enc) as fh:
                 reader = csv.DictReader(fh)
-                names = [(k or "").strip().lower() for k in reader.fieldnames or []]
+                names = [k for k in ((n or "").strip().lower() for n in reader.fieldnames or []) if k]
                 twice = sorted({k for k in names if names.count(k) > 1})
                 if twice:
                     raise ValueError(f"these columns appear twice (headers ignore case and spaces): {', '.join(twice)}")
                 rows = []
                 for i, raw in enumerate(reader, start=2):
-                    row = {(k or "").strip().lower(): (v if isinstance(v, str) else "") for k, v in raw.items()}
+                    row = {k.strip().lower(): (v if isinstance(v, str) else "") for k, v in raw.items() if (k or "").strip()}
                     row["_row"] = i
                     rows.append(row)
                 return rows, enc
