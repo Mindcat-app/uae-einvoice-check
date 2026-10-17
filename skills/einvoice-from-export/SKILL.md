@@ -1,6 +1,6 @@
 ---
 name: einvoice-from-export
-description: Read an ERP invoice export (CSV, Excel or UBL XML), map its columns to the UAE e-invoice check columns, and run the check. Use inside einvoice-readiness when invoices come from an ERP such as Zoho Books, Tally Prime, SAP Business One, Odoo, Dynamics 365 Business Central, QuickBooks or Xero.
+description: Read an ERP invoice export (CSV, Excel or UBL XML), map its columns to the UAE or Saudi (ZATCA) e-invoice check columns, and run the check. Use inside einvoice-readiness or einvoice-ksa when invoices come from an ERP such as Zoho Books, Tally Prime, SAP Business One, Odoo, Dynamics 365 Business Central, QuickBooks or Xero.
 ---
 
 # Invoice data from an ERP export
@@ -26,3 +26,6 @@ Each row is a starting point, unverified until checked against a real export fro
 | Salesforce Billing | Use `einvoice-from-salesforce` (read-only SOQL), or a report on Invoice Lines with Invoice fields, exported as CSV | blng__Invoice__c Name > invoice_number, blng__InvoiceDate__c > issue_date, blng__InvoiceLine__c blng__Quantity__c > quantity, blng__UnitPrice__c > unit_price, blng__Subtotal__c > line_net, blng__TaxAmount__c > line_vat |
 
 Columns these systems rarely hold, and the user must source or add: `transaction_type`, endpoint ids and schemes, `item_kind` with HS or SAC codes, UN/ECE `unit_code`, `credit_reason`, and the seller's emirate code. List them as "no field holds this yet".
+
+## Saudi (ZATCA) invoices
+For Saudi invoices, map to the columns in `${CLAUDE_PLUGIN_ROOT}/samples/ksa-sample.csv` instead and run `einvoice-ksa`: `invoice_number`, `issue_date`, `issue_time`, `type_code` (388, 386, 383 or 381), `transaction_code` (7 characters such as 0100000; format as text), `currency`, `supply_date`, `supply_end_date`, `seller_name`, `seller_vat`, `seller_id`, `seller_id_scheme`, `seller_street`, `seller_building_number`, `seller_postal_code`, `seller_city`, `seller_district`, `seller_country`, the same `buyer_` columns, `preceding_invoice`, `note_reason`, `line_id`, `item_name`, `quantity`, `unit_code`, `unit_price`, `base_quantity`, `line_allowance`, `line_charge`, `line_net`, `vat_category` (S, Z, E or O), `vat_rate`, `line_vat`, `exemption_reason` (VATEX-SA codes), and optionally `invoice_total_net`, `invoice_total_vat`, `invoice_total_gross` and `invoice_total_vat_sar`. `${CLAUDE_PLUGIN_ROOT}/docs/ksa-rules.md` says what each holds.

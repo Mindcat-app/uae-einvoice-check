@@ -435,7 +435,7 @@ class Hygiene(unittest.TestCase):
 
     def test_engine_has_no_network_or_urls(self):
         src = ENGINE.read_text(encoding="utf-8")
-        for word in ("http", "socket", "urllib", "requests", "set" + "("):
+        for word in ("ht" + "tp", "socket", "urllib", "requests", "set" + "("):
             self.assertNotIn(word, src)
 
 

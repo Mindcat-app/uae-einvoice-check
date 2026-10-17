@@ -1,6 +1,8 @@
 # mindcat-einvoice-check
 
-Checks UAE invoice data from Salesforce or an ERP (CSV, Excel or PINT AE UBL XML) against the PINT AE e-invoicing rules and lists the gaps per invoice: missing fields, dates, TRN and TIN format, emirate codes, VAT categories and rates, VAT and line maths, units of measure, item codes, credit-note references and reasons, transaction-type flags, Peppol endpoints and foreign-currency fields. It can also audit customer and item master data, write a gap list for a finance team, and write a hand-off pack for your accredited service provider. **It never signs, sends or submits invoices, and it is not tax advice.** Saudi (ZATCA) checks are planned and not built yet.
+Checks UAE invoice data from Salesforce or an ERP (CSV, Excel or PINT AE UBL XML) against the PINT AE e-invoicing rules and lists the gaps per invoice: missing fields, dates, TRN and TIN format, emirate codes, VAT categories and rates, VAT and line maths, units of measure, item codes, credit-note references and reasons, transaction-type flags, Peppol endpoints and foreign-currency fields. It can also audit customer and item master data, write a gap list for a finance team, and write a hand-off pack for your accredited service provider. **It never signs, sends or submits invoices, and it is not tax advice.**
+
+It also pre-checks **Saudi (ZATCA)** invoice data in CSV against the ZATCA E-Invoice XML Implementation Standard v1.2 rules (BR-KSA and BR ids): VAT numbers, transaction codes, addresses, VAT categories and exemption codes, credit and debit notes, and totals. It never signs an invoice, generates a QR code or hash, or submits anything; the final XML must still be validated with the ZATCA SDK or the Fatoora portal. Rules and sources: [docs/ksa-rules.md](docs/ksa-rules.md).
 
 > **UAE e-invoicing dates** (Ministerial Decision 244 of 2025, Article 5, as amended by Ministerial Resolution No. 66 of 2026)
 > | Group | Appoint an accredited service provider by | Live from |
@@ -21,7 +23,7 @@ UAE finance teams in the second wave (revenue under AED 50m: appoint an accredit
 ```
 
 ## What it runs, sends and fetches
-- **Local check engine** (`engine/check_uae.py`, Python standard library only). It reads the file or folder the user points at and prints the gaps. It makes no network calls. It writes files only when asked: `--report` and `--handoff` write to the path you give.
+- **Two local check engines**, Python standard library only: `engine/check_uae.py` (UAE, PINT AE) and `engine/check_ksa.py` (Saudi Arabia, ZATCA). Each reads the file the user points at and prints the gaps. Neither makes network calls. The UAE engine writes files only when asked: `--report` and `--handoff` write to the path you give. The Saudi engine writes nothing.
 - **Salesforce reads** (optional) through the user's own read-only SOQL tools, to build the sample. `einvoice-from-salesforce` needs your own Salesforce CLI (`sf`) or a Salesforce MCP tool, signed in to your org; the plugin ships neither.
 - **Nothing is sent to Mindcat.** There is no hosted server yet and no telemetry.
 - **No hooks.** The plugin adds no hooks, so it never runs on your other commands or tools. It stays read-only towards your systems: the engine has no network code, it writes only the report files you ask for, and its skills only read; for Salesforce, sign in as a read-only user. Salesforce fix suggestions are text for your admin; the plugin never deploys them.
@@ -100,6 +102,8 @@ Help getting ready: mindcat.ai/contact
 | `skills/einvoice-from-salesforce` | Read-only SOQL sample and column mapping |
 | `skills/einvoice-from-export` | CSV, Excel or XML exports, with export tips for common ERPs |
 | `skills/einvoice-master-data` | Customer and item list audit |
+| `skills/einvoice-ksa` | Saudi (ZATCA) data pre-check |
+| `engine/check_ksa.py`, `docs/ksa-rules.md`, `samples/ksa-sample.csv` | Saudi checks, their rules and sources, and a sample |
 | `engine/check_uae.py` | UAE checks for CSV, Excel and UBL XML |
 | `samples/uae-sample.csv` | 4 invoices: 2 clean, 2 with gaps |
 | `tests/` | `python3 -I -m unittest discover -s tests` |
@@ -130,4 +134,4 @@ To run the check by hand: `python3 -I engine/check_uae.py samples/uae-sample.csv
 - Privacy policy: [PRIVACY.md](PRIVACY.md). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Status
-Version 0.2.0. Checks UAE invoices against the PINT AE v1.0.4 rules. Tested with unit tests and the sample invoices in `samples/`. Saudi (ZATCA) checks are planned and not included yet.
+Version 0.2.0. Checks UAE invoices against the PINT AE v1.0.4 rules and pre-checks Saudi invoice data against the ZATCA XML Implementation Standard v1.2. Tested with unit tests and the sample invoices in `samples/`.

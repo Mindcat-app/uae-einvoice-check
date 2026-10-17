@@ -6,7 +6,7 @@ allowed-tools: Read, Glob, Grep, Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/engine/c
 
 # UAE e-invoicing readiness
 
-This plugin checks data. It never signs, sends or submits an invoice, and it is not tax advice. Saudi (ZATCA) checks are not built yet: say so if asked.
+This plugin checks data. It never signs, sends or submits an invoice, and it is not tax advice. For Saudi Arabia (ZATCA, Fatoora), use `einvoice-ksa`: a data pre-check against the ZATCA XML Implementation Standard v1.2 rules (BR-KSA ids) that never signs, generates a QR code or hash, or submits; the final XML must still be validated with the ZATCA SDK or the Fatoora portal.
 
 ## 1. Dates
 If you do not know the company's UAE revenue band (AED 50m or more, under AED 50m, or a government entity), ask. Then state the date to appoint an accredited service provider (ASP) and the go-live date for that band, from this table only, with the source: Ministerial Decision 244 of 2025, Article 5, as amended by Ministerial Resolution No. 66 of 2026.

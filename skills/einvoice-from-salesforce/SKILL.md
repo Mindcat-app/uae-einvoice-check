@@ -1,6 +1,6 @@
 ---
 name: einvoice-from-salesforce
-description: Pull a read-only sample of invoices, lines and customers from Salesforce (Salesforce Billing, Revenue Cloud or custom invoice objects) and turn it into the CSV the UAE e-invoice check reads. Use inside einvoice-readiness when invoices live in Salesforce.
+description: Pull a read-only sample of invoices, lines and customers from Salesforce (Salesforce Billing, Revenue Cloud or custom invoice objects) and turn it into the CSV the UAE or Saudi (ZATCA) e-invoice check reads. Use inside einvoice-readiness or einvoice-ksa when invoices live in Salesforce.
 ---
 
 # Invoice data from Salesforce
@@ -33,3 +33,6 @@ Suggested validation rules (Salesforce REGEX matches the whole value):
 - Goods need an HS code, on Product2: `AND(OR(ISPICKVAL(Item_Type__c, "Goods"), ISPICKVAL(Item_Type__c, "Both")), ISBLANK(HS_Code__c))`; the same for services and `SAC_Code__c`.
 
 Tell the admin to test new rules in a sandbox first, because existing records that fail them block later edits until fixed.
+
+## Saudi (ZATCA) invoices
+For Saudi invoices, map to the columns in `${CLAUDE_PLUGIN_ROOT}/samples/ksa-sample.csv` instead and run `einvoice-ksa`: `invoice_number`, `issue_date`, `issue_time`, `type_code` (388, 386, 383 or 381), `transaction_code` (7 characters such as 0100000; format as text), `currency`, `supply_date`, `supply_end_date`, `seller_name`, `seller_vat`, `seller_id`, `seller_id_scheme`, `seller_street`, `seller_building_number`, `seller_postal_code`, `seller_city`, `seller_district`, `seller_country`, the same `buyer_` columns, `preceding_invoice`, `note_reason`, `line_id`, `item_name`, `quantity`, `unit_code`, `unit_price`, `base_quantity`, `line_allowance`, `line_charge`, `line_net`, `vat_category` (S, Z, E or O), `vat_rate`, `line_vat`, `exemption_reason` (VATEX-SA codes), and optionally `invoice_total_net`, `invoice_total_vat`, `invoice_total_gross` and `invoice_total_vat_sar`. `${CLAUDE_PLUGIN_ROOT}/docs/ksa-rules.md` says what each holds.
