@@ -1,4 +1,4 @@
-"""UAE e-invoice data checks for CSV exports (one row per invoice line).
+"""UAE e-invoice data checks for invoice data: CSV or .xlsx (one row per invoice line), or PINT AE UBL XML.
 
 Each check names the PINT AE v1.0.4 rule it mirrors (ibr-... or aligned-..., from the official Schematron;
 the README links the source). Checks with an "mc-" id are our own
@@ -14,8 +14,11 @@ Exit codes: 0 no gaps, 1 gaps found, 2 the file could not be checked.
 import csv
 import datetime
 import json
+import os
 import re
 import sys
+import zipfile
+import xml.etree.ElementTree as ET
 from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 
@@ -118,7 +121,7 @@ def check_row(r):
         elif not scheme:
             gap(f"{who}_endpoint_scheme", scheme_rule, "Give the endpoint scheme, 0235 for the UAE")
         elif scheme not in EAS:
-            gap(f"{who}_endpoint_scheme", "ibr-cl-25", "Use a scheme id from the Peppol EAS list, 0235 for the UAE")
+            gap(f"{who}_endpoint_scheme", "ibr-cl-25", "Use a scheme id from the Peppol EAS list, 0235 for the UAE (format the column as text)")
 
     # Seller identifiers
     trn, tin = get("seller_trn"), get("seller_tin")
@@ -164,7 +167,8 @@ def check_row(r):
             gap("buyer_trn", "ibr-103-ae", "Reverse-charge (AE) lines need the buyer's TRN")
         if vat not in (None, Decimal(0)):
             gap("line_vat", "mc-reverse-charge-vat", "Reverse-charge lines carry 0 VAT; the buyer accounts for it")
-    if cat in {"S", "Z", "N"} and None not in (net, rate, vat) and abs(net * rate / 100 - vat) > Decimal("0.01"):
+    margin = TX.match(get("transaction_type")) and get("transaction_type")[2] == "1"  # VAT is on the margin
+    if cat in {"S", "Z", "N"} and None not in (net, rate, vat) and not margin and not (r.get("_xml") and cur != "AED") and abs(net * rate / 100 - vat) > Decimal("0.01"):
         gap("line_vat", "mc-vat-maths", f"net x rate = {net * rate / 100:.2f}, not {vat}")
 
     # Line maths: qty x (price / base qty) + charges - allowances
@@ -179,9 +183,12 @@ def check_row(r):
             gap("line_net", "ibr-147-ae", f"quantity x price / base quantity + charges - allowances = {want:.2f}, not {net}")
 
     # Currency
-    if cur and cur != "AED":
-        if not get("exchange_rate"):
-            gap("exchange_rate", "ibr-159-ae", "Non-AED invoices need the exchange rate to AED")
+    if cur and cur != "AED" and not get("exchange_rate"):
+        gap("exchange_rate", "ibr-159-ae", "Non-AED invoices need the exchange rate to AED")
+    if r.get("_xml"):
+        if cat and cat != "E" and not (get("line_vat") and r.get("_payable")):
+            gap("line_vat", "ibr-104-ae", "Lines need the VAT amount (BTAE-08) and amount payable (BTAE-10) in AED")
+    elif cur and cur != "AED":
         if cat != "E" and not get("line_net_aed"):
             gap("line_net_aed", "ibr-104-ae", "Non-AED invoices need each line's amount in AED")
         fx, aed = dec(get("exchange_rate")), dec(get("line_net_aed"))
@@ -218,10 +225,15 @@ def norm(f, v):
 
 def check_invoices(rows):
     """Per-invoice checks: header fields that differ between lines, and warnings that are not gaps."""
-    gaps, warnings, by_inv = [], [], defaultdict(list)
+    gaps, warnings, by_inv, files = [], [], defaultdict(list), defaultdict(dict)
     for r in rows:
-        by_inv[inv(r)].append(r)
-    for i, lines in by_inv.items():
+        by_inv[(inv(r), r.get("_file"))].append(r)
+        files[inv(r)][r.get("_file")] = True
+    for i, found in files.items():
+        if len(found) > 1:  # XML: one invoice number in several files
+            gaps.append({"invoice": i, "line": "", "field": "invoice_number", "value": " | ".join(found), "rule": "mc-header-mismatch",
+                         "fix": "Each invoice needs its own number; this one is used in more than one file"})
+    for (i, _), lines in by_inv.items():
         for f in HEADER:
             seen = {norm(f, r.get(f)): True for r in lines}
             if len(seen) > 1:
@@ -299,25 +311,160 @@ def coverage(rows):
             "invoices_by_currency": dict(c["currency"]), "not_in_sample": [n for n, has in SCENARIOS if not has(c)]}
 
 
-def load(path):
+def to_rows(header, records):
+    """Header cells and (row number, values) pairs to row dicts. Headers ignore case and spaces; blank ones are dropped."""
+    names = [(n or "").strip().lower() for n in header]
+    filled = [k for k in names if k]
+    twice = sorted({k for k in filled if filled.count(k) > 1})
+    if twice:
+        raise ValueError(f"these columns appear twice (headers ignore case and spaces): {', '.join(twice)}")
+    rows = []
+    for n, values in records:
+        row = {k: (values[j] if j < len(values) else "") for j, k in enumerate(names) if k}
+        row["_row"] = n
+        rows.append(row)
+    return rows
+
+
+def load_csv(path):
     # cp1256 (Arabic Windows) decodes any bytes, so it is the last try; save other files as UTF-8.
     for enc in ("utf-8-sig", "cp1256"):
         try:
             with open(path, newline="", encoding=enc) as fh:
-                reader = csv.DictReader(fh)
-                names = [k for k in ((n or "").strip().lower() for n in reader.fieldnames or []) if k]
-                twice = sorted({k for k in names if names.count(k) > 1})
-                if twice:
-                    raise ValueError(f"these columns appear twice (headers ignore case and spaces): {', '.join(twice)}")
-                rows = []
-                for i, raw in enumerate(reader, start=2):
-                    row = {k.strip().lower(): (v if isinstance(v, str) else "") for k, v in raw.items() if (k or "").strip()}
-                    row["_row"] = i
-                    rows.append(row)
-                return rows, enc
+                lines = list(csv.reader(fh))
         except UnicodeDecodeError:
             continue
+        lines = [x for x in lines if x]
+        return (to_rows(lines[0], list(enumerate(lines[1:], start=2))) if lines else []), enc
     raise ValueError("could not read the file's text encoding")
+
+
+def local(el):
+    return el.tag.rsplit("}", 1)[-1]
+
+
+def col_index(ref):
+    n = 0
+    for ch in re.match(r"[A-Z]*", ref).group():
+        n = n * 26 + ord(ch) - 64
+    return n - 1
+
+
+def load_xlsx(path):
+    """First sheet of an .xlsx file. Cell text is kept as Excel stored it; issue_date serial numbers become dates."""
+    with zipfile.ZipFile(path) as z:
+        book = ET.fromstring(z.read("xl/workbook.xml"))
+        sheet = next(e for e in book.iter() if local(e) == "sheet")
+        rid = next(v for k, v in sheet.attrib.items() if k.endswith("}id"))
+        rels = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
+        target = next(e.get("Target") for e in rels.iter() if e.get("Id") == rid)
+        target = target.lstrip("/") if target.startswith("/") else "xl/" + target
+        shared = []
+        if "xl/sharedStrings.xml" in z.namelist():
+            for si in ET.fromstring(z.read("xl/sharedStrings.xml")):
+                parts = [si] + [r for r in si if local(r) == "r"]
+                shared.append("".join(t.text or "" for p in parts for t in p if local(t) == "t"))
+        records = []
+        for row in (e for e in ET.fromstring(z.read(target)).iter() if local(e) == "row"):
+            values = {}
+            for c in (e for e in row if local(e) == "c"):
+                kind, v = c.get("t"), next((e.text or "" for e in c if local(e) == "v"), "")
+                if kind == "s":
+                    v = shared[int(v)]
+                elif kind == "inlineStr":
+                    v = "".join(t.text or "" for t in c.iter() if local(t) == "t")
+                values[col_index(c.get("r", ""))] = v
+            if any(values.values()):
+                records.append((int(row.get("r", len(records) + 1)), [values.get(j, "") for j in range(max(values) + 1)]))
+    if not records:
+        return [], "xlsx"
+    rows = to_rows(records[0][1], records[1:])
+    for r in rows:
+        if re.fullmatch(r"[0-9]{5}(\.0+)?", r.get("issue_date", "")):
+            r["issue_date"] = str(datetime.date(1899, 12, 30) + datetime.timedelta(days=int(float(r["issue_date"]))))
+    return rows, "xlsx"
+
+
+def at(el, path):
+    """First element down a slash path of local names (namespaces ignored), or None."""
+    for name in path.split("/"):
+        if el is None:
+            return None
+        el = next((c for c in el if local(c) == name), None)
+    return el
+
+
+def text(el, path, attr=None):
+    el = at(el, path) if path else el
+    if el is None:
+        return ""
+    return (el.get(attr, "") if attr else el.text or "").strip()
+
+
+def party(p, who):
+    """Party fields from a UBL cac:Party."""
+    schemes = [x for x in (p if p is not None else []) if local(x) == "PartyTaxScheme"]
+    vat = [text(x, "CompanyID") for x in schemes if text(x, "TaxScheme/ID").upper() == "VAT"]
+    other = [text(x, "CompanyID") for x in schemes if text(x, "TaxScheme/ID").upper() != "VAT"]
+    out = {f"{who}_name": text(p, "PartyLegalEntity/RegistrationName") or text(p, "PartyName/Name"),
+           f"{who}_trn": vat[0] if vat else "", f"{who}_country": text(p, "PostalAddress/Country/IdentificationCode"),
+           f"{who}_emirate": text(p, "PostalAddress/CountrySubentity"), f"{who}_endpoint": text(p, "EndpointID"),
+           f"{who}_endpoint_scheme": text(p, "EndpointID", "schemeID")}
+    if who == "seller":
+        out["seller_tin"] = other[0] if other else ""
+    return out
+
+
+def load_xml(path):
+    """PINT AE UBL invoices or credit notes (one file, or every .xml in a folder) as rows of the CSV shape."""
+    files = sorted(os.path.join(path, f) for f in os.listdir(path) if f.lower().endswith(".xml")) if os.path.isdir(path) else [path]
+    rows = []
+    for f in files:
+        try:
+            doc = ET.parse(f).getroot()
+        except ET.ParseError as e:
+            raise ValueError(f"{os.path.basename(f)} is not readable XML ({e})")
+        credit = local(doc) == "CreditNote"
+        head = {"invoice_number": text(doc, "ID"), "issue_date": text(doc, "IssueDate"),
+                "type_code": text(doc, "CreditNoteTypeCode" if credit else "InvoiceTypeCode"),
+                "currency": text(doc, "DocumentCurrencyCode"), "exchange_rate": text(doc, "TaxExchangeRate/CalculationRate"),
+                "transaction_type": text(doc, "ProfileExecutionID"),
+                "preceding_invoice": text(doc, "BillingReference/InvoiceDocumentReference/ID"),
+                "credit_reason": text(doc, "DiscrepancyResponse/ResponseCode"),
+                "invoice_total_net": text(doc, "LegalMonetaryTotal/LineExtensionAmount"),
+                **party(at(doc, "AccountingSupplierParty/Party"), "seller"),
+                **party(at(doc, "AccountingCustomerParty/Party"), "buyer")}
+        for n, line in enumerate((x for x in doc if local(x) in ("InvoiceLine", "CreditNoteLine")), start=1):
+            qty = at(line, "CreditedQuantity" if credit else "InvoicedQuantity")
+            ac = [x for x in line if local(x) == "AllowanceCharge"]
+            amounts = lambda charge: [dec(text(x, "Amount")) for x in ac if text(x, "ChargeIndicator").lower() == str(charge).lower()]
+            allow, charge = amounts(False), amounts(True)
+            kind = text(line, "Item/CommodityClassification/CommodityCode")
+            rows.append({**head, "_row": f"{os.path.basename(f)} line {n}", "_xml": True, "_file": os.path.basename(f), "_payable": text(line, "ItemPriceExtension/Amount"),
+                         "line_id": text(line, "ID"), "item_name": text(line, "Item/Name"), "item_kind": kind,
+                         "hs_code": text(line, "Item/CommodityClassification/ItemClassificationCode"),
+                         "sac_code": text(line, "Item/AdditionalItemIdentification/ID"),
+                         "quantity": text(qty, ""), "unit_code": text(qty, "", "unitCode"),
+                         "unit_price": text(line, "Price/PriceAmount"), "base_quantity": text(line, "Price/BaseQuantity"),
+                         "line_allowance": "" if None in allow else str(sum(allow)) if allow else "",
+                         "line_charge": "" if None in charge else str(sum(charge)) if charge else "",
+                         "line_net": text(line, "LineExtensionAmount"), "line_net_aed": "",
+                         "vat_category": text(line, "Item/ClassifiedTaxCategory/ID"),
+                         "vat_rate": text(line, "Item/ClassifiedTaxCategory/Percent"),
+                         "exemption_reason": text(line, "Item/ClassifiedTaxCategory/TaxExemptionReasonCode"),
+                         "line_vat": text(line, "ItemPriceExtension/TaxTotal/TaxAmount")})
+    return rows, "xml"
+
+
+def load(path):
+    if os.path.isdir(path) or path.lower().endswith(".xml"):
+        return load_xml(path)
+    if path.lower().endswith(".xlsx"):
+        try:
+            return load_xlsx(path)
+        except (zipfile.BadZipFile, KeyError, StopIteration, ET.ParseError, IndexError) as e:
+            raise ValueError(f"could not read the Excel file ({type(e).__name__}); save it again as .xlsx or CSV")
+    return load_csv(path)
 
 
 def main(argv):
