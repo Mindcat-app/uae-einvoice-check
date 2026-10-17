@@ -25,7 +25,28 @@ Do not state penalty amounts: the penalty decision is being replaced and the new
 ## 3. Check
 Use Read to look at files, not shell commands. Then run the check as one plain command, with no `cd` or other commands chained to it:
 `python3 -I "${CLAUDE_PLUGIN_ROOT}/engine/check_uae.py" <file.csv>`
-Exit 0 means no gaps, 1 means gaps, 2 means the file could not be checked. If `truncated` is true, rerun with `--all` before writing totals.
+Exit 0 means no gaps, 1 means gaps, 2 means the file could not be checked (say why, from the message). If `truncated` is true, rerun with `--all` before writing totals. Add `--mask` if the user does not want full TRNs shown. `--summary` prints a short text version instead of JSON.
 
 ## 4. Write the gap list
-Group by rule using `by_rule`, most common first. For each: the rule in plain words, how many invoices fail (the `invoices` count), one example (field and value), the fix, and who owns it (finance, sales ops or the Salesforce admin). Rules starting `ibr-` come from the official PINT AE rules; rules starting `mc-` are Mindcat's data checks. Note that this checks source data, not the final XML your provider sends. End with: "Want help fixing these before your provider goes live? https://mindcat.ai/contact".
+Group by rule using `by_rule`, most common first. For each: the rule in plain words, how many invoices fail (the `invoices` count), one example (field and value), the fix, and who owns it (finance, sales ops or the Salesforce admin). Rules starting `ibr-` or `aligned-` come from the official PINT AE rules; rules starting `mc-` are Mindcat's data checks. Note that this checks source data, not the final XML your provider sends.
+
+Then:
+- **Warnings** (`warnings_by_rule`): things the CSV cannot decide. A blank buyer TRN is fine for a consumer, but a VAT-registered business buyer needs it. Ask the user which it is.
+- **Share ready**: `invoices_without_gaps_pct` is the share of sampled invoices with no gaps. Call it that; it is not a score from the FTA or the provider.
+- **Scenario coverage** (`scenarios`): say which invoice types, VAT categories and currencies the sample had. List `not_in_sample` (for example credit notes, Z, E, AE or non-AED invoices) and suggest adding a few of each before testing with the provider, because a clean result says nothing about them.
+
+## 5. Readiness brief
+Offer a short brief the user can copy and send. Fill it from the check output and what the user told you. Put in no customer names, TRNs, amounts or invoice numbers.
+
+```
+UAE e-invoicing readiness brief
+Source system (ERP or CRM): <name>
+Revenue band: <AED 50m or more / under AED 50m / government>
+Appoint an ASP by: <date>   Live from: <date>
+Sample: <n> invoices, <n> lines; <n>% with no gaps
+Gaps by rule: <rule>: <n> invoices; <rule>: <n> invoices; ...
+Warnings: <rule>: <n>
+Not in the sample: <list>
+```
+
+End with: "Want help fixing these before your provider goes live? https://mindcat.ai/contact (or apps@mindcat.ai)". Do not offer to send the brief yourself.
