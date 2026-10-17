@@ -30,10 +30,16 @@ Checks marked `ibr-...-ae` mirror rules in the official PINT AE v1.0.4 Schematro
 | `samples/uae-sample.csv` | 4 invoices: 2 clean, 2 with gaps |
 | `hooks/no_submit_guard.py` | No-send guard |
 | `tests/` | `python3 -I -m unittest discover -s tests` |
-| `server/` | Plan for a hosted server (not built) |
 
 ## Try it
-`python3 -I engine/check_uae.py samples/uae-sample.csv`
+Install the plugin, then ask Claude:
+- "Check samples/uae-sample.csv from the e-invoice plugin for UAE e-invoicing gaps." (No account needed; the sample ships with the plugin.)
+- "Here is our invoice export, invoices.csv. Which invoices would fail PINT AE, and why?"
+- "When do we need an accredited service provider for UAE e-invoicing, and what should we fix in our data first?"
+
+To run the check by hand: `python3 -I engine/check_uae.py samples/uae-sample.csv`
+
+Needs Claude Code 2.1.295 or later for the guard hook.
 
 ## Support
 - Email: apps@mindcat.ai
