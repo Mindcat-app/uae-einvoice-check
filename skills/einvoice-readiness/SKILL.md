@@ -6,10 +6,10 @@ allowed-tools: Read, Glob, Grep, Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/engine/c
 
 # UAE e-invoicing readiness
 
-This plugin checks data. It never signs, sends or submits an invoice, and it is not tax advice. Saudi (ZATCA) checks are not built yet: say so if asked.
+This plugin checks data. It never signs, sends or submits an invoice, and it is not tax advice. For Saudi Arabia (ZATCA, Fatoora), use `einvoice-ksa`: a data pre-check against the ZATCA XML Implementation Standard v1.2 rules (BR-KSA ids) that never signs, generates a QR code or hash, or submits; the final XML must still be validated with the ZATCA SDK or the Fatoora portal.
 
 ## 1. Dates
-Ask the UAE revenue band, then give the dates that apply and their source: Ministerial Decision 244 of 2025 as amended by Ministerial Resolution 66 of 2026.
+If you do not know the company's UAE revenue band (AED 50m or more, under AED 50m, or a government entity), ask. Then state the date to appoint an accredited service provider (ASP) and the go-live date for that band, from this table only, with the source: Ministerial Decision 244 of 2025, Article 5, as amended by Ministerial Resolution No. 66 of 2026.
 
 | Group | Appoint an ASP by | Live from |
 | --- | --- | --- |
@@ -20,12 +20,26 @@ Ask the UAE revenue band, then give the dates that apply and their source: Minis
 Do not state penalty amounts: the penalty decision is being replaced and the new amounts are not public.
 
 ## 2. Get a sample
-20 recent invoices with their lines and the customers on them. From Salesforce use `einvoice-from-salesforce`; from an ERP use `einvoice-from-export`. Save it as CSV with the columns in `${CLAUDE_PLUGIN_ROOT}/samples/uae-sample.csv`.
+20 recent invoices with their lines and the customers on them. From Salesforce use `einvoice-from-salesforce`; from an ERP use `einvoice-from-export`. The check reads CSV or .xlsx with the columns in `${CLAUDE_PLUGIN_ROOT}/samples/uae-sample.csv`, or PINT AE UBL XML (one file or a folder) as it is. For XML, say that this runs the plugin's checks on the XML's data and is not full Schematron validation; the provider still validates it. To check customer and item lists before invoices, use `einvoice-master-data`.
 
 ## 3. Check
 Use Read to look at files, not shell commands. Then run the check as one plain command, with no `cd` or other commands chained to it:
-`python3 -I "${CLAUDE_PLUGIN_ROOT}/engine/check_uae.py" <file.csv>`
-Exit 0 means no gaps, 1 means gaps, 2 means the file could not be checked. If `truncated` is true, rerun with `--all` before writing totals.
+`python3 -I "${CLAUDE_PLUGIN_ROOT}/engine/check_uae.py" <file.csv, .xlsx, .xml or folder> --mask`
+Use `--mask` by default whenever the file holds real customer data: it hides all but the last 4 characters of TRNs, TINs and endpoint ids in the output, which goes to the AI provider. Drop it only for the bundled sample or when the user asks.
+Exit 0 means no gaps, 1 means gaps, 2 means the file could not be checked. The totals in `by_rule` always cover every gap; `truncated` only means the `gaps` list shows the first 50. For a large file, add `--report <gaps.csv>` to write every gap to a CSV (with empty owner and status columns) that the finance team can sort and assign, instead of rerunning with `--all`. Add `--report` or `--handoff` only when the user wants files written, and say where they went.
 
 ## 4. Write the gap list
-Group by rule using `by_rule`, most common first. For each: the rule in plain words, how many invoices fail (the `invoices` count), one example (field and value), the fix, and who owns it (finance, sales ops or the Salesforce admin). Rules starting `ibr-` come from the official PINT AE rules; rules starting `mc-` are Mindcat's data checks. Note that this checks source data, not the final XML your provider sends. End with: "Want help fixing these before your provider goes live? https://mindcat.ai/contact".
+Group by rule using `by_rule`, most common first. A gap with invoice `(all)` means the column is missing from the file: list those first, as one fix each (add the column to the export). For each: the rule in plain words, how many invoices fail (the `invoices` count), one example (field and value), the fix, and who owns it (finance, sales ops or the Salesforce admin). Rules starting `ibr-` or `aligned-` come from the official PINT AE rules; rules starting `mc-` are Mindcat's data checks. The rule `mc-header-mismatch` means lines of one invoice disagree, or two invoices share one number. Note that this checks source data, not the final XML your provider sends.
+
+Then read `coverage`. For each item in `not_in_sample`, say plainly what the sample did not test, for example "Your sample has no credit notes, exports (zero-rated) or foreign-currency invoices, so those were not checked; add a few if you issue them." List `warnings` separately as things to confirm, not as gaps (a UAE buyer with no TRN is fine for consumers).
+
+## 5. Hand-off pack for the provider (when asked)
+If the user has chosen an accredited service provider, offer `--handoff <folder>`. It writes `field-map.md` (each column and the PINT AE id it feeds, such as ibt-031 for the seller TRN) and `readiness.md` (gap counts by rule and field, and sample coverage), with no names, invoice numbers, TRNs or amounts. Explain that it is for their provider's onboarding team, to agree the mapping and the fixes. Give the gap list itself (`--report`) only if the user asks to share it.
+
+## 6. Brief you can paste
+Close with a heading "Brief you can paste" and exactly 3 lines, with no TRNs, names or amounts:
+1. Invoices checked, invoices with gaps, and the gap count per rule id.
+2. What the sample did not cover (`not_in_sample`), or "covers the common cases".
+3. Revenue band and the ASP and go-live dates for it (or "revenue band not given").
+
+End with: "Want help fixing these before your provider goes live? https://mindcat.ai/contact".

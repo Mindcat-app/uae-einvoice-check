@@ -1,7 +1,7 @@
 {
   "name": "mindcat-einvoice-check",
-  "version": "0.1.0",
-  "description": "Checks UAE invoice data from Salesforce or an ERP CSV export against the PINT AE e-invoicing rules (tax numbers, emirate codes, VAT categories and maths, credit notes, currency) and lists the gaps. It never signs, sends or submits invoices.",
+  "version": "0.2.0",
+  "description": "Checks invoice data from Salesforce or an ERP export against UAE (PINT AE) and Saudi (ZATCA) e-invoicing rules (tax numbers, emirate and address codes, VAT categories and maths, credit notes, currency, transaction codes) and lists the gaps. It never signs, sends or submits invoices.",
   "author": {
     "name": "Mindcat",
     "url": "https://mindcat.ai",
@@ -14,11 +14,15 @@
     "e-invoicing",
     "UAE",
     "PINT AE",
+    "Saudi Arabia",
+    "ZATCA",
+    "Fatoora",
     "VAT",
     "Salesforce"
   ],
   "privacyPolicyUrl": "https://github.com/Mindcat-app/uae-einvoice-check/blob/main/PRIVACY.md",
   "supportUrl": "https://mindcat.ai/contact",
-  "displayName": "UAE E-invoicing Readiness Check",
-  "documentationUrl": "https://github.com/Mindcat-app/uae-einvoice-check#readme"
+  "displayName": "GCC E-invoicing Readiness Check (UAE and KSA)",
+  "documentationUrl": "https://github.com/Mindcat-app/uae-einvoice-check#readme",
+  "icon": "./.claude-plugin/icon.png"
 }
