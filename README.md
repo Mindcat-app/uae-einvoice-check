@@ -46,7 +46,7 @@ To run the check by hand: `python3 -I engine/check_uae.py samples/uae-sample.csv
 ## Support
 - Email: apps@mindcat.ai
 - Contact: https://mindcat.ai/contact
-- Privacy policy: https://mindcat.ai/privacy-policy
+- Privacy policy: [PRIVACY.md](PRIVACY.md)
 
 ## Status
 Version 0.1.0. Checks UAE invoices against the PINT AE v1.0.4 rules. Tested with unit tests and the sample invoices in `samples/`. Saudi (ZATCA) checks are planned and not included yet.
