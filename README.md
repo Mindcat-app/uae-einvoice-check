@@ -41,4 +41,4 @@ Checks marked `ibr-...-ae` mirror rules in the official PINT AE v1.0.4 Schematro
 - Privacy policy: https://mindcat.ai/privacy-policy
 
 ## Status
-Scaffold. Plan: https://claude.ai/code/artifact/8677d048-1033-4825-a70e-87b1377041f9
+Version 0.1.0. Checks UAE invoices against the PINT AE v1.0.4 rules. Tested with unit tests and the sample invoices in `samples/`. Saudi (ZATCA) checks are planned and not included yet.
