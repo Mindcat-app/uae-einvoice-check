@@ -78,6 +78,12 @@ class Outputs(unittest.TestCase):
         for private in ("Buyer One", "INV-1002", "10000000000003", "4100"):
             self.assertNotIn(private, text)
 
+    def test_report_never_overwrites_the_input(self):
+        path = os.path.join(self.tmp, "invoices.csv")
+        Path(path).write_bytes(SAMPLE.read_bytes())
+        self.assertEqual(run(path, "--report", path)[0], 2)
+        self.assertEqual(Path(path).read_bytes(), SAMPLE.read_bytes())
+
     def test_unknown_option_fails(self):
         self.assertEqual(run(SAMPLE, "--masked")[0], 2)
         self.assertEqual(run(SAMPLE, "--ma")[0], 2)  # no abbreviations

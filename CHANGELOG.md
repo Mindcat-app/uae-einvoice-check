@@ -14,6 +14,8 @@
 - `--report` writes every gap to a CSV for a finance team; `--handoff` writes a field map and gap summary for the provider.
 - Salesforce fix pack (suggested fields, picklists and validation rules, as text for an admin) and export tips for common ERPs (unverified until checked against real exports).
 - Options are checked: a mistyped option stops with exit 2. Invoice-level cells filled on the first line only are read for the whole invoice. Non-UTF-8 files are read as cp1256 or cp1252.
+- A required column missing from the whole file is one gap per file (invoice `(all)`, "column missing from the file") instead of one per invoice, in both engines.
+- Review fixes: `--mask` also hides endpoint ids (they hold the TIN); rows of empty cells are skipped; UTF-16 files are read; .xlsx cells without a cell reference are read in order; `--report` cannot overwrite the file being checked; the Saudi check stops on a mistyped option (exit 2).
 - README: deadlines with sources, CSV columns, what is not checked, FAQ, troubleshooting and help. New SECURITY, CONTRIBUTING and issue templates, and tests run in GitHub Actions.
 
 ## 0.1.0 - 2026-10-17

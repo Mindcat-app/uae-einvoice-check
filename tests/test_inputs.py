@@ -27,18 +27,19 @@ def col(n):
     return s
 
 
-def write_xlsx(path, table, numbers=()):
-    """A minimal .xlsx: strings go to shared strings, columns named in `numbers` are stored as numbers."""
+def write_xlsx(path, table, numbers=(), refs=True):
+    """A minimal .xlsx: strings go to shared strings, columns named in `numbers` are stored as numbers.
+    refs=False leaves out the optional cell references, as some writers do (every cell is then filled)."""
     shared, rows = [], []
     for i, values in enumerate(table, start=1):
         cells = []
         for j, v in enumerate(values):
-            ref = f"{col(j)}{i}"
+            ref = f' r="{col(j)}{i}"' if refs else ""
             if i > 1 and table[0][j] in numbers and v != "":
-                cells.append(f'<c r="{ref}"><v>{v}</v></c>')
-            elif v != "":
+                cells.append(f'<c{ref}><v>{v}</v></c>')
+            elif v != "" or not refs:
                 shared.append(v)
-                cells.append(f'<c r="{ref}" t="s"><v>{len(shared) - 1}</v></c>')
+                cells.append(f'<c{ref} t="s"><v>{len(shared) - 1}</v></c>')
         rows.append(f'<row r="{i}">{"".join(cells)}</row>')
     ns = 'xmlns="urn:test:main" xmlns:r="urn:test:rel"'
     with zipfile.ZipFile(path, "w") as z:
@@ -106,6 +107,14 @@ class Inputs(unittest.TestCase):
         self.assertEqual(out["file_encoding"], "xlsx")
         strip = lambda o: [(g["invoice"], g["field"], g["rule"]) for g in o["gaps"]]
         self.assertEqual(strip(out), strip(out_csv))
+
+    def test_xlsx_without_cell_references(self):
+        import csv
+        with open(SAMPLE, encoding="utf-8", newline="") as fh:
+            table = list(csv.reader(fh))
+        path = os.path.join(self.tmp, "norefs.xlsx")
+        write_xlsx(path, table, refs=False)
+        self.assertEqual(check(path)[1]["gaps"], check(SAMPLE)[1]["gaps"])
 
     def test_xlsx_date_serial_and_text_kept(self):
         import csv

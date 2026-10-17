@@ -240,6 +240,39 @@ class CheckUae(unittest.TestCase):
         out = json.loads(p.stdout)
         self.assertEqual((out["invoices"], out["invoices_with_gaps"]), (4, 2))
 
+    def test_missing_column_reported_once_per_file(self):
+        absent = ("transaction_type", "seller_endpoint", "buyer_endpoint")
+        base = {k: v for k, v in CLEAN.items() if k not in absent}
+        code, out = run([{**base, "invoice_number": f"I{i}"} for i in range(5)])
+        self.assertEqual(code, 1)
+        self.assertEqual(sorted((g["invoice"], g["field"], g["rule"]) for g in out["gaps"]),
+                         [("(all)", "buyer_endpoint", "ibr-080"), ("(all)", "seller_endpoint", "ibr-081"),
+                          ("(all)", "transaction_type", "ibr-154-ae")])
+        self.assertTrue(all(g["fix"].startswith("column missing from the file") for g in out["gaps"]))
+        self.assertEqual({(b["gaps"], b["invoices"]) for b in out["by_rule"]}, {(1, 5)})
+        self.assertEqual(out["invoices_with_gaps"], 5)
+        # A blank cell in a column the file has is still reported per invoice
+        code, out = run([{**CLEAN, "invoice_number": f"I{i}", "transaction_type": ""} for i in range(5)])
+        self.assertEqual(sorted(g["invoice"] for g in out["gaps"]), [f"I{i}" for i in range(5)])
+
+    def test_mask_hides_endpoint_ids(self):
+        code, out = run([CLEAN, {**CLEAN, "line_id": "2", "seller_endpoint": "1234567890"}], args=("--mask",))
+        self.assertIn("seller_endpoint", [g["field"] for g in out["gaps"]])
+        self.assertNotIn("1234567890", json.dumps(out))
+
+    def test_utf16_file(self):
+        keys = list(CLEAN)
+        with tempfile.NamedTemporaryFile("wb", suffix=".csv", delete=False) as fh:
+            fh.write((",".join(keys) + "\n" + ",".join(CLEAN[k] for k in keys) + "\n").encode("utf-16"))
+        p = subprocess.run([sys.executable, "-I", str(ENGINE), fh.name], capture_output=True, text=True)
+        self.assertEqual((p.returncode, json.loads(p.stdout)["file_encoding"]), (0, "utf-16"))
+
+    def test_rows_of_empty_cells_are_skipped(self):
+        keys = list(CLEAN)
+        text = ",".join(keys) + "\n" + ",".join(CLEAN[k] for k in keys) + "\n" + "," * (len(keys) - 1) + "\n,, \n"
+        code, out = run(text=text)
+        self.assertEqual((code, out["lines"]), (0, 1))
+
 
 if __name__ == "__main__":
     unittest.main()

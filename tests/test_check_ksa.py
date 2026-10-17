@@ -382,6 +382,30 @@ class Output(unittest.TestCase):
         code, out = run([{**row, "quantity": "9", "line_net": "900", "line_vat": "135"}])
         self.assertEqual(out["warnings"], [])
 
+    def test_missing_column_reported_once_per_file(self):
+        base = {k: v for k, v in CLEAN.items() if k not in ("issue_time", "seller_vat")}
+        code, out = run([{**base, "invoice_number": f"INV-{n}"} for n in range(4)])
+        self.assertEqual(sorted((g["invoice"], g["field"], g["rule"]) for g in out["gaps"]),
+                         [("(all)", "issue_time", "BR-KSA-70"), ("(all)", "seller_vat", "BR-KSA-39")])
+        self.assertEqual(out["gaps"][0]["fix"], "column missing from the file")
+        self.assertEqual(({b["invoices"] for b in out["by_rule"]}, out["invoices_with_gaps"]), ({4}, 4))
+        # A blank cell in a column the file has is still reported per invoice
+        code, out = run([{**CLEAN, "invoice_number": f"INV-{n}", "issue_time": ""} for n in range(4)])
+        self.assertEqual(len(out["gaps"]), 4)
+
+    def test_utf16_file(self):
+        keys = list(CLEAN)
+        with tempfile.NamedTemporaryFile("wb", suffix=".csv", delete=False) as fh:
+            fh.write((",".join(keys) + "\n" + ",".join(CLEAN[k] for k in keys) + "\n").encode("utf-16"))
+        p = subprocess.run([sys.executable, "-I", str(ENGINE), fh.name], capture_output=True, text=True)
+        self.assertEqual((p.returncode, json.loads(p.stdout)["file_encoding"]), (0, "utf-16"))
+
+    def test_rows_of_empty_cells_are_skipped(self):
+        keys = list(CLEAN)
+        text = ",".join(keys) + "\n" + ",".join(CLEAN[k] for k in keys) + "\n" + "," * (len(keys) - 1) + "\n"
+        code, out = run(text=text)
+        self.assertEqual((code, out["lines"]), (0, 1))
+
     def test_mask(self):
         code, out = run([{**CLEAN, "seller_vat": "300000000000004"}], args=("--mask",))
         self.assertEqual(out["gaps"][0]["value"], "***********0004")
@@ -419,6 +443,9 @@ class Exit2(unittest.TestCase):
         self.assertEqual(p.returncode, 2)
         p = subprocess.run([sys.executable, "-I", str(ENGINE), "/nonexistent/file.csv"], capture_output=True, text=True)
         self.assertEqual(p.returncode, 2)
+
+    def test_unknown_option_fails(self):
+        self.assertEqual(run([CLEAN], args=("--maks",))[0], 2)  # a typo must not print unmasked output
 
 
 class Hygiene(unittest.TestCase):

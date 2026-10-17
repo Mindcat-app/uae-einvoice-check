@@ -42,7 +42,7 @@ HEADER = ["invoice_number", "issue_date", "type_code", "currency", "exchange_rat
           "buyer_country", "preceding_invoice", "credit_reason", "invoice_total_net", "invoice_total_vat",
           "invoice_total_gross", "transaction_type", "seller_endpoint", "seller_endpoint_scheme", "buyer_endpoint",
           "buyer_endpoint_scheme"]
-MASKED = ["seller_trn", "buyer_trn", "seller_tin", "trn", "tin"]
+MASKED = ["seller_trn", "buyer_trn", "seller_tin", "trn", "tin", "seller_endpoint", "buyer_endpoint"]  # UAE endpoints hold the TIN
 DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 CODE_FIELDS = ["type_code", "currency", "seller_emirate", "seller_country", "buyer_emirate", "buyer_country", "credit_reason"]
 UNIT = re.compile(r"^[A-Z0-9]{2,3}$")
@@ -163,7 +163,7 @@ def check_row(r):
             gap("buyer_trn", "ibr-103-ae", "Reverse-charge (AE) lines need the buyer's TRN")
         if vat not in (None, Decimal(0)):
             gap("line_vat", "mc-reverse-charge-vat", "Reverse-charge lines carry 0 VAT; the buyer accounts for it")
-    margin = TX.match(get("transaction_type")) and get("transaction_type")[2] == "1"  # VAT is on the margin
+    margin = TX.match(tx) and tx[2] == "1"  # VAT is on the margin
     if cat in {"S", "Z", "N"} and None not in (net, rate, vat) and not margin and not (r.get("_xml") and cur != "AED") and abs(net * rate / 100 - vat) > Decimal("0.01"):
         gap("line_vat", "mc-vat-maths", f"net x rate = {net * rate / 100:.2f}, not {vat}")
 
@@ -338,6 +338,23 @@ def summary(out):
     return "\n".join(text)
 
 
+def collapse_missing(gaps, cols):
+    """A column absent from the file gets one gap per rule, with "(all)" for the invoice, not one gap per invoice.
+    Gaps on cells that are there but blank or wrong stay per invoice. XML (cols None) has no columns."""
+    if cols is None:
+        return gaps
+    seen, out = {}, []
+    for g in gaps:
+        if g["field"] in cols:
+            out.append(g)
+        elif (g["field"], g["rule"]) not in seen:
+            seen[(g["field"], g["rule"])] = True
+            fix = "" if g["fix"] == f"{g['field']} is empty" else ". " + g["fix"]
+            who = "record" if "record" in g else "invoice"
+            out.append({**g, who: "(all)", "line": "", "value": "", "fix": "column missing from the file" + fix})
+    return out
+
+
 def dedupe(gaps):
     """Report a header-field gap once per invoice, not once per line."""
     seen, out = {}, []
@@ -381,7 +398,10 @@ def to_rows(header, records):
 
 
 def decode(data):
-    """UTF-8 first. Otherwise Arabic Windows (cp1256) when the text has Arabic words, else Western Windows (cp1252)."""
+    """UTF-16 when it starts with its byte order mark, then UTF-8. Otherwise Arabic Windows (cp1256) when the text
+    has Arabic words, else Western Windows (cp1252)."""
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return data.decode("utf-16"), "utf-16"
     data = data[3:] if data.startswith(b"\xef\xbb\xbf") else data
     try:
         return data.decode("utf-8"), "utf-8"
@@ -399,8 +419,8 @@ def decode(data):
 def load_csv(path):
     with open(path, "rb") as fh:
         content, enc = decode(fh.read())
-    lines = [x for x in csv.reader(io.StringIO(content, newline="")) if x]
-    return (to_rows(lines[0], list(enumerate(lines[1:], start=2))) if lines else []), enc
+    lines = [(n, x) for n, x in enumerate(csv.reader(io.StringIO(content, newline="")), start=1) if any(c.strip() for c in x)]
+    return (to_rows(lines[0][1], lines[1:]) if lines else []), enc  # rows of empty cells (",,,") are skipped
 
 
 def local(el):
@@ -431,13 +451,13 @@ def load_xlsx(path):
         records = []
         for row in (e for e in ET.fromstring(z.read(target)).iter() if local(e) == "row"):
             values = {}
-            for c in (e for e in row if local(e) == "c"):
+            for c in (e for e in row if local(e) == "c"):  # a cell with no "r" follows the one before it
                 kind, v = c.get("t"), next((e.text or "" for e in c if local(e) == "v"), "")
                 if kind == "s":
                     v = shared[int(v)]
                 elif kind == "inlineStr":
                     v = "".join(t.text or "" for t in c.iter() if local(t) == "t")
-                values[col_index(c.get("r", ""))] = v
+                values[col_index(c.get("r")) if c.get("r") else max(values, default=-1) + 1] = v
             if any(values.values()):
                 records.append((int(row.get("r", len(records) + 1)), [values.get(j, "") for j in range(max(values) + 1)]))
     if not records:
@@ -587,12 +607,15 @@ def main(argv):
                                  description="UAE e-invoice (PINT AE) data checks. Reads CSV, .xlsx or UBL XML.")
     ap.add_argument("path", help="CSV, .xlsx, .xml or a folder of .xml files")
     ap.add_argument("--all", action="store_true", help=f"list every gap, not only the first {SHOWN}")
-    ap.add_argument("--mask", action="store_true", help="hide all but the last 4 characters of TRNs and TINs")
+    ap.add_argument("--mask", action="store_true", help="hide all but the last 4 characters of TRNs, TINs and endpoint ids")
     ap.add_argument("--summary", action="store_true", help="print a short text summary instead of JSON")
     ap.add_argument("--master", choices=list(MASTER), help="check a customer or item list instead of invoices")
     ap.add_argument("--report", metavar="GAPS.CSV", help="also write every gap to this CSV, one row per gap")
     ap.add_argument("--handoff", metavar="FOLDER", help="also write a field map and gap summary for your provider")
     a = ap.parse_args(argv[1:])
+    if a.report and os.path.realpath(a.report) == os.path.realpath(a.path):
+        print("--report must name a new file, not the file being checked", file=sys.stderr)
+        return 2
     try:
         rows, enc = load(a.path)
     except (OSError, ValueError, csv.Error) as e:
@@ -610,18 +633,22 @@ def main(argv):
         inv_gaps, warnings = check_invoices(fill_headers(rows))
         gaps = dedupe([g for r in rows for g in check_row(r)]) + inv_gaps
     who = lambda g: g.get("invoice", g.get("record"))
-    by_rule, invoices_by_rule, fields_by_rule = defaultdict(int), defaultdict(dict), defaultdict(dict)
-    for g in gaps:
-        by_rule[g["rule"]] += 1
+    invoices_by_rule, fields_by_rule = defaultdict(dict), defaultdict(dict)
+    for g in gaps:  # counted before collapse_missing, so "(all)" gaps still count every invoice they hit
         invoices_by_rule[g["rule"]][who(g)] = True
         fields_by_rule[g["rule"]][g["field"]] = True
+    with_gaps = len({who(g) for g in gaps})
+    gaps = collapse_missing(gaps, None if enc == "xml" else rows[0])
+    by_rule = defaultdict(int)
+    for g in gaps:
+        by_rule[g["rule"]] += 1
     if a.mask:
         gaps = [{**g, "value": " | ".join(mask(x) for x in str(g["value"]).split(" | "))} if g["field"] in MASKED else g
                 for g in gaps]
     shown = gaps if a.all else gaps[:SHOWN]
     unit = "records" if a.master else "invoices"
     out = {"file_encoding": enc, "lines": len(rows), unit: len(rows) if a.master else len({inv(r) for r in rows}),
-           f"{unit}_with_gaps": len({who(g) for g in gaps}),
+           f"{unit}_with_gaps": with_gaps,
            "gaps_total": len(gaps), "gaps_shown": len(shown), "truncated": len(shown) < len(gaps),
            "by_rule": [{"rule": k, "gaps": v, unit: len(invoices_by_rule[k]), "fields": list(fields_by_rule[k])}
                        for k, v in sorted(by_rule.items(), key=lambda kv: -kv[1])]}

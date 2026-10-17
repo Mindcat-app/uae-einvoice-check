@@ -29,7 +29,7 @@ UAE finance teams in the second wave (revenue under AED 50m: appoint an accredit
 - **No hooks.** The plugin adds no hooks, so it never runs on your other commands or tools. It stays read-only towards your systems: the engine has no network code, it writes only the report files you ask for, and its skills only read; for Salesforce, sign in as a read-only user. Salesforce fix suggestions are text for your admin; the plugin never deploys them.
 
 ## Data handling
-The invoice data you check (customer names, TRNs, addresses, amounts) is read on your machine and passes through your AI client's conversation, so it goes to your AI provider under that client's own data terms. The check's output does too; run it with `--mask` to hide all but the last 4 characters of TRNs and TINs. Any file the plugin writes stays on your disk; the `--handoff` pack holds no names, invoice numbers, TRNs or amounts. Mindcat receives nothing.
+The invoice data you check (customer names, TRNs, addresses, amounts) is read on your machine and passes through your AI client's conversation, so it goes to your AI provider under that client's own data terms. The check's output does too; run it with `--mask` to hide all but the last 4 characters of TRNs, TINs and endpoint ids (the Saudi check: VAT numbers and other IDs). Any file the plugin writes stays on your disk; the `--handoff` pack holds no names, invoice numbers, TRNs or amounts. Mindcat receives nothing.
 
 Needs Python 3 (standard library only).
 
@@ -59,17 +59,17 @@ One row per invoice line. Header names ignore case and surrounding spaces; a col
 | `vat_category`, `vat_rate`, `line_vat`, `exemption_reason` | VAT. Category is S, Z, E, O, AE or N |
 | `invoice_total_net`, `invoice_total_vat`, `invoice_total_gross` | Optional. When present, each is checked once per invoice against the sum of `line_net`, the sum of `line_vat`, and the two added together |
 
-Invoice-level columns must be the same on every line of an invoice; a gap in one is reported once per invoice. If they are filled on an invoice's first line only, later blank cells are read from that line; every line still needs the invoice number. Numbers are plain digits and a dot. Save the file as UTF-8. Other files are read as Arabic Windows (cp1256) when they hold Arabic words and as Western Windows (cp1252) otherwise; the output names the encoding used.
+Invoice-level columns must be the same on every line of an invoice; a gap in one is reported once per invoice. If they are filled on an invoice's first line only, later blank cells are read from that line; every line still needs the invoice number. Numbers are plain digits and a dot. Rows with only empty cells are skipped. Save the file as UTF-8 (UTF-16 with a byte order mark is read too). Other files are read as Arabic Windows (cp1256) when they hold Arabic words and as Western Windows (cp1252) otherwise; the output names the encoding used.
 
 ## Output
-JSON with the gaps (grouped in `by_rule`), `coverage` (invoices by type and currency, lines by VAT category, and `not_in_sample`: common cases such as credit notes, zero-rated, exempt, reverse charge or foreign currency that the sample has none of) and `warnings`, which are worth a look but are not counted as gaps. Exit 0 means no gaps, 1 gaps, 2 the file could not be checked.
+JSON with the gaps (grouped in `by_rule`), `coverage` (invoices by type and currency, lines by VAT category, and `not_in_sample`: common cases such as credit notes, zero-rated, exempt, reverse charge or foreign currency that the sample has none of) and `warnings`, which are worth a look but are not counted as gaps. A required column that is missing from the file entirely is one gap for the whole file, with invoice `(all)` and the fix "column missing from the file"; `by_rule` still counts every invoice it affects. A cell that is there but blank or wrong is a gap on its invoice. Exit 0 means no gaps, 1 gaps, 2 the file could not be checked.
 
-Options (`--help` lists them; a mistyped option stops with exit 2):
+Options (`--help` lists them; a mistyped option stops with exit 2, in both engines):
 
 | Option | What |
 | --- | --- |
 | `--all` | List every gap in the output; the default shows the first 50. Totals always count every gap |
-| `--mask` | Hide all but the last 4 characters of TRNs and TINs |
+| `--mask` | Hide all but the last 4 characters of TRNs, TINs and endpoint ids (UAE endpoint ids hold the TIN), in the output and in `--report` |
 | `--summary` | Print a short text summary instead of JSON |
 | `--master customers` / `--master items` | Check a customer or item list instead of invoices |
 | `--report gaps.csv` | Also write every gap to a CSV, one row per gap, with empty owner and status columns to assign fixes |
@@ -122,7 +122,7 @@ To run the check by hand: `python3 -I engine/check_uae.py samples/uae-sample.csv
 - **Does Mindcat see my data?** No. The check runs on your machine; see [PRIVACY.md](PRIVACY.md).
 
 ## Troubleshooting
-- **Exit code 2:** the file could not be checked. The message says why: no lines, a column that appears twice, an unknown option, or a file that could not be read.
+- **Exit code 2:** the file could not be checked. The message says why: no lines, a column that appears twice, an unknown option, a file that could not be read, or `--report` naming the file being checked.
 - **`ibr-154-ae` or `ibr-cl-25` on every invoice from Excel:** Excel turned `00000000` into `0` or `0235` into `235`. Format those columns as text.
 - **Odd characters in names:** save the file as UTF-8. `file_encoding` in the output shows how it was read.
 - **Many `mc-number-format` gaps:** Excel often writes numbers as `1,000` or `5%`. Format the columns as plain numbers with no thousands separator before saving as CSV.

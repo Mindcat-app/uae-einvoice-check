@@ -9,12 +9,10 @@ This is a pre-check on source data. It does not build, sign, stamp, hash, send, 
 it does not create or verify QR codes, cryptographic stamps or invoice hashes, and it is not tax advice.
 The final XML must still be validated with ZATCA's official tools (the SDK or the Fatoora portal).
 
-Usage: python3 -I check_ksa.py invoices.csv [--all] [--mask] [--summary]
-  --all      list every gap, not only the first 50
-  --mask     hide all but the last 4 characters of VAT numbers and other IDs in the output
-  --summary  print a short text summary instead of JSON
+Usage: python3 -I check_ksa.py invoices.csv [--all] [--mask] [--summary]   (--help lists the options)
 Exit codes: 0 no gaps, 1 gaps found, 2 the file could not be checked.
 """
+import argparse
 import csv
 import datetime
 import json
@@ -420,6 +418,20 @@ def summary(out):
     return "\n".join(text)
 
 
+def collapse_missing(gaps, cols):
+    """A column absent from the file gets one gap per rule, with "(all)" for the invoice, not one gap per invoice.
+    Gaps on cells that are there but blank or wrong stay per invoice."""
+    seen, out = {}, []
+    for g in gaps:
+        if g["field"] in cols:
+            out.append(g)
+        elif (g["field"], g["rule"]) not in seen:
+            seen[(g["field"], g["rule"])] = True
+            fix = "" if g["fix"] == f"{g['field']} is empty" else ". " + g["fix"]
+            out.append({**g, "invoice": "(all)", "line": "", "value": "", "fix": "column missing from the file" + fix})
+    return out
+
+
 def dedupe(gaps):
     """Report a header-field gap once per invoice, not once per line."""
     seen, out = {}, []
@@ -453,7 +465,9 @@ def coverage(rows):
 
 def load(path):
     # cp1256 (Arabic Windows) decodes any bytes, so it is the last try; save other files as UTF-8.
-    for enc in ("utf-8-sig", "cp1256"):
+    with open(path, "rb") as fh:
+        utf16 = fh.read(2) in (b"\xff\xfe", b"\xfe\xff")
+    for enc in ("utf-16",) if utf16 else ("utf-8-sig", "cp1256"):
         try:
             with open(path, newline="", encoding=enc) as fh:
                 reader = csv.DictReader(fh)
@@ -463,42 +477,51 @@ def load(path):
                     raise ValueError(f"these columns appear twice (headers ignore case and spaces): {', '.join(twice)}")
                 rows = []
                 for i, raw in enumerate(reader, start=2):
+                    if not any(isinstance(v, str) and v.strip() for v in raw.values()):
+                        continue  # a row of empty cells (",,,")
                     row = {k.strip().lower(): (v if isinstance(v, str) else "") for k, v in raw.items() if (k or "").strip()}
                     row["_row"] = i
                     rows.append(row)
                 return rows, enc, names
-        except UnicodeDecodeError:
+        except UnicodeError:
             continue
     raise ValueError("could not read the file's text encoding")
 
 
 def main(argv):
-    files = [a for a in argv[1:] if not a.startswith("--")]
-    if len(files) != 1:
-        print("usage: python3 -I check_ksa.py invoices.csv [--all] [--mask] [--summary]", file=sys.stderr)
-        return 2
+    ap = argparse.ArgumentParser(prog="check_ksa.py", allow_abbrev=False,
+                                 description="Saudi (ZATCA) e-invoice data pre-check. Reads a CSV of invoice lines.")
+    ap.add_argument("path", help="CSV of invoice lines")
+    ap.add_argument("--all", action="store_true", help=f"list every gap, not only the first {SHOWN}")
+    ap.add_argument("--mask", action="store_true", help="hide all but the last 4 characters of VAT numbers and other IDs")
+    ap.add_argument("--summary", action="store_true", help="print a short text summary instead of JSON")
+    a = ap.parse_args(argv[1:])
     try:
-        rows, enc, cols = load(files[0])
+        rows, enc, cols = load(a.path)
     except (OSError, ValueError, csv.Error) as e:
-        print(f"could not check {files[0]}: {e}", file=sys.stderr)
+        print(f"could not check {a.path}: {e}", file=sys.stderr)
         return 2
     if not rows:
-        print(f"{files[0]} has no invoice lines, so nothing was checked", file=sys.stderr)
+        print(f"{a.path} has no invoice lines, so nothing was checked", file=sys.stderr)
         return 2
     inv_gaps, warnings = check_invoices(rows)
     gaps = dedupe([g for r in rows for g in check_row(r, cols)]) + inv_gaps
-    by_rule, invoices_by_rule = defaultdict(int), defaultdict(dict)
+    invoices_by_rule = defaultdict(dict)
+    for g in gaps:  # counted before collapse_missing, so "(all)" gaps still count every invoice they hit
+        invoices_by_rule[g["rule"]][g["invoice"]] = True
+    with_gaps = len({g["invoice"] for g in gaps})
+    gaps = collapse_missing(gaps, cols)
+    by_rule = defaultdict(int)
     for g in gaps:
         by_rule[g["rule"]] += 1
-        invoices_by_rule[g["rule"]][g["invoice"]] = True
     invoices = {inv(r) for r in rows}
-    shown = gaps if "--all" in argv else gaps[:SHOWN]
-    if "--mask" in argv:
+    shown = gaps if a.all else gaps[:SHOWN]
+    if a.mask:
         shown = [{**g, "value": " | ".join(mask(x) for x in str(g["value"]).split(" | "))} if g["field"] in MASKED else g
                  for g in shown]
     out = {
         "file_encoding": enc, "lines": len(rows), "invoices": len(invoices),
-        "invoices_with_gaps": len({g["invoice"] for g in gaps}),
+        "invoices_with_gaps": with_gaps,
         "gaps_total": len(gaps), "gaps_shown": len(shown), "truncated": len(shown) < len(gaps),
         "by_rule": [{"rule": k, "gaps": v, "invoices": len(invoices_by_rule[k])}
                     for k, v in sorted(by_rule.items(), key=lambda kv: -kv[1])],
@@ -506,7 +529,7 @@ def main(argv):
         "phase2_columns_missing": [c for c in PHASE2 if c not in cols],
         "not_checked": NOT_CHECKED,
         "gaps": shown}
-    print(summary(out) if "--summary" in argv else json.dumps(out, indent=2, ensure_ascii=False, default=str))
+    print(summary(out) if a.summary else json.dumps(out, indent=2, ensure_ascii=False, default=str))
     return 1 if gaps else 0
 
 
