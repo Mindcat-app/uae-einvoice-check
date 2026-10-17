@@ -165,10 +165,10 @@ def main(argv):
         print(f"{argv[1]} has no invoice lines, so nothing was checked", file=sys.stderr)
         return 2
     gaps = [g for r in rows for g in check_row(r)]
-    by_rule, invoices_by_rule = defaultdict(int), defaultdict(set)
+    by_rule, invoices_by_rule = defaultdict(int), defaultdict(dict)
     for g in gaps:
         by_rule[g["rule"]] += 1
-        invoices_by_rule[g["rule"]].add(g["invoice"])
+        invoices_by_rule[g["rule"]][g["invoice"]] = True
     invoices = {r.get("invoice_number") or f"(row {r['_row']})" for r in rows}
     shown = gaps if "--all" in argv else gaps[:SHOWN]
     print(json.dumps({
