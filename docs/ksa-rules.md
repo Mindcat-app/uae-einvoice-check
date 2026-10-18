@@ -150,6 +150,9 @@ These run only when the CSV has the column. They check that a value is there and
 | --- | --- | --- |
 | `csv-number-format` | A number column holds something other than plain digits 0-9 and a dot (commas, %, currency signs, Arabic-Indic digits) | Needed to read the file. The DD format column asks for "Arabic numerals (The following numerals: 1234567890)" and BR-KSA-DEC-02 rejects the % sign |
 | `csv-header-mismatch` | Lines of one invoice disagree on an invoice-level column, or two invoices share a number | Needed to read one invoice from several rows |
+| `csv-duplicate-line` | Two or more lines of one invoice share a line id | A repeated row would be counted twice in the totals and VAT breakdown |
+| `csv-unknown-column` | Warning only, not a gap: a column the check does not read, with the closest known name. Headers ignore case, spaces, hyphens and invisible characters, so "Buyer VAT" reads as `buyer_vat` | A misnamed column would otherwise be skipped without a word |
+| `csv-s-rate` | Warning only, not a gap: a standard-rated (S) line with a rate other than 15 | Saudi VAT is 15% today, but no e-invoicing business rule fixes the S rate (see "Unconfirmed" below), so it is not reported as a gap |
 | `guideline-4.2.1` | Warning only, not a gap: a simplified invoice (02) to a buyer with a VAT number for SAR 1,000 or more before VAT. Confirm the subtype | Guideline 2.3 and 4.2.1(b): simplified invoices for B2B are an option below SAR 1,000 |
 
 ## Not checked
@@ -168,7 +171,7 @@ These are common expectations that we could not confirm as rules in the document
 
 | Expectation | What the documents say |
 | --- | --- |
-| Standard-rated (S) lines must be 15% | No business rule fixes the S rate. The 15% figure appears only in examples (XML Std 9.4, 9.6; Guideline examples). BR-KSA-DEC-02 only limits rates to 0 to 100. |
+| Standard-rated (S) lines must be 15% | No business rule fixes the S rate. The 15% figure appears only in examples (XML Std 9.4, 9.6; Guideline examples). BR-KSA-DEC-02 only limits rates to 0 to 100. The engine gives a warning (`csv-s-rate`), not a gap. |
 | S lines must have a rate above 0 | BR-S-06 and BR-S-07 require it for document-level allowances and charges only; no line-level rule is published in XML Std 13.2.3. |
 | Seller country must be SA | BR-KSA-09 requires a seller country code; no rule fixes its value. |
 | Buyer VAT number always required on tax invoices (B2B) | Not a rule. The DD marks BT-48 conditional; BR-KSA-81 accepts another buyer ID instead. |

@@ -37,12 +37,18 @@ class Outputs(unittest.TestCase):
             good, {**good, "customer_name": "Bad", "trn": "123", "tin": "99", "emirate": "Abu Dhabi"},
             {**good, "customer_name": "Overseas", "country": "GB", "trn": "GB123", "emirate": ""},
             {**good, "customer_name": "No emirate", "emirate": ""}])
-        code, out = run(path, "--master", "customers", "--mask")
+        code, out = run(path, "--master", "customers")
         self.assertEqual(code, 1)
         self.assertEqual((out["master"], out["records"], out["records_with_gaps"]), ("customers", 4, 2))
+        # Masked by default: customer gaps name the row, not the customer
+        self.assertEqual(sorted((g["record"], g["rule"]) for g in out["gaps"]),
+                         [("(row 3)", "ibr-128-ae"), ("(row 3)", "ibr-132-ae"), ("(row 3)", "mc-tin-format"), ("(row 5)", "ibr-128-ae")])
+        self.assertNotIn("123", [g["value"] for g in out["gaps"] if g["field"] == "trn"])
+        self.assertNotIn("No emirate", json.dumps(out))
+        code, out = run(path, "--master", "customers", "--unmask")
         self.assertEqual(sorted((g["record"], g["rule"]) for g in out["gaps"]),
                          [("Bad", "ibr-128-ae"), ("Bad", "ibr-132-ae"), ("Bad", "mc-tin-format"), ("No emirate", "ibr-128-ae")])
-        self.assertNotIn("123", [g["value"] for g in out["gaps"] if g["field"] == "trn"])
+        self.assertIn("123", [g["value"] for g in out["gaps"] if g["field"] == "trn"])
 
     def test_items(self):
         good = {"item_name": "Consulting day", "item_kind": "service", "sac_code": "998311", "hs_code": "",
