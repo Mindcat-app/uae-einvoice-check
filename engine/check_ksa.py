@@ -9,17 +9,24 @@ This is a pre-check on source data. It does not build, sign, stamp, hash, send, 
 it does not create or verify QR codes, cryptographic stamps or invoice hashes, and it is not tax advice.
 The final XML must still be validated with ZATCA's official tools (the SDK or the Fatoora portal).
 
-Usage: python3 -I check_ksa.py invoices.csv [--all] [--mask] [--summary]   (--help lists the options)
+Usage: python3 -I check_ksa.py invoices.csv [--all] [--unmask] [--summary]   (--help lists the options)
+Output is masked by default; --unmask shows VAT numbers, IDs, names and streets in full. It writes no files.
 Exit codes: 0 no gaps, 1 gaps found, 2 the file could not be checked.
 """
 import argparse
 import csv
 import datetime
+import difflib
+import errno
+import io
 import json
+import os
 import re
+import stat
 import sys
+import unicodedata
 from collections import defaultdict
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Context, Decimal, InvalidOperation
 
 VAT_NO = re.compile(r"^3[0-9]{13}3$")  # BR-KSA-40 / BR-KSA-44
 TYPE_CODES = {"388": "tax invoice", "386": "prepayment invoice", "383": "debit note", "381": "credit note"}
@@ -40,6 +47,10 @@ DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 TIME = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z?$")
 CURRENCY = re.compile(r"^[A-Z]{3}$")
 COUNTRY = re.compile(r"^[A-Z]{2}$")
+COUNTRY_NAMES = {"KSA": "SA", "SAUDIARABIA": "SA", "KINGDOMOFSAUDIARABIA": "SA"}  # case, spaces and dots removed
+MAX_DIGITS = 30  # longest number read, in digits
+CLIP = 60  # longest value echoed in the output
+MAX_INPUT = 200 * 2 ** 20  # largest input file
 UUID_CHARS = re.compile(r"^[A-Za-z0-9-]+$")
 DIGITS = re.compile(r"^[0-9]+$")
 CENT = Decimal("0.01")
@@ -74,7 +85,8 @@ HEADER = ["invoice_number", "issue_date", "issue_time", "type_code", "transactio
           "invoice_total_vat_sar"] + PHASE2
 CODE_FIELDS = ["type_code", "currency", "tax_currency", "seller_country", "buyer_country", "seller_id_scheme",
                "buyer_id_scheme"]
-MASKED = ["seller_vat", "buyer_vat", "seller_id", "buyer_id"]
+# Masked unless --unmask: identifiers, party names and streets
+MASKED = ["seller_vat", "buyer_vat", "seller_id", "buyer_id", "seller_name", "buyer_name", "seller_street", "buyer_street"]
 SCENARIOS = [("tax invoice (subtype 01)", lambda c: c["subtype"].get("01")),
              ("simplified invoice (subtype 02)", lambda c: c["subtype"].get("02")),
              ("credit note (381)", lambda c: c["type_code"].get("381")),
@@ -83,17 +95,19 @@ SCENARIOS = [("tax invoice (subtype 01)", lambda c: c["subtype"].get("01")),
              ("exempt (E)", lambda c: c["vat_category"].get("E")),
              ("not subject to VAT (O)", lambda c: c["vat_category"].get("O")),
              ("export (transaction code position 5)", lambda c: c["export"].get("yes")),
-             ("non-SAR currency", lambda c: any(k not in ("SAR", "(blank)") for k in c["currency"]))]
+             ("non-SAR currency", lambda c: any(k not in ("SAR", "(blank)", "(other)") for k in c["currency"]))]
 NOT_CHECKED = ["QR code, cryptographic stamp and the value of the previous invoice hash (never generated or verified here)",
                "prepayment invoices and prepayment adjustment lines (BR-KSA-73 to BR-KSA-80)",
                "document-level allowances and charges", "payment means codes", "the final UBL XML"]
 SHOWN = 50
+KNOWN = list(dict.fromkeys([f for f, _ in REQUIRED] + HEADER + NUMERIC + BUYER_SA_ADDRESS + [
+    "exemption_reason", "unit_code", "base_quantity", "line_charge_reason_code", "line_charge_reason"]))
 
 
 def dec(v):
     """Strict decimal: ASCII digits only, finite. Returns None for empty or unreadable values."""
     s = (v or "").strip()
-    if not s or not re.fullmatch(r"-?[0-9]+(\.[0-9]+)?", s):
+    if not s or len(s.lstrip("-").replace(".", "")) > MAX_DIGITS or not re.fullmatch(r"-?[0-9]+(\.[0-9]+)?", s):
         return None
     try:
         d = Decimal(s)
@@ -119,11 +133,24 @@ def day(v):
 
 
 def money(d):
-    return d.quantize(CENT, rounding=ROUND_HALF_UP)
+    return d.quantize(CENT, rounding=ROUND_HALF_UP, context=Context(prec=200))  # numbers have at most 30 digits
 
 
 def inv(r):
     return (r.get("invoice_number") or "").strip() or f"(row {r['_row']})"
+
+
+def clip(v):
+    """A value as echoed in the output: at most 60 characters."""
+    v = str(v)
+    return v if len(v) <= CLIP else v[:CLIP] + "\u2026"
+
+
+def country(v):
+    """A country cell as a code. KSA, Saudi Arabia and Kingdom of Saudi Arabia (any case or spacing) read as SA.
+    Only the Saudi buyer rules use this; BR-CL-14 still asks for the 2-letter code itself."""
+    s = (v or "").strip().upper()
+    return COUNTRY_NAMES.get(re.sub(r"[\s.]", "", s), s)
 
 
 def flags(r):
@@ -138,9 +165,9 @@ def flags(r):
 def check_row(r, cols):
     gaps = []
 
-    def gap(field, rule, fix):
+    def gap(field, rule, fix, value=None):
         gaps.append({"invoice": inv(r), "line": r.get("line_id", ""),
-                     "field": field, "value": r.get(field, ""), "rule": rule, "fix": fix})
+                     "field": field, "value": r.get(field, "") if value is None else value, "rule": rule, "fix": fix})
 
     get = lambda f: (r.get(f) or "").strip()
     for f, rule in REQUIRED:
@@ -148,15 +175,15 @@ def check_row(r, cols):
             gap(f, rule, f"{f} is empty")
     for f in NUMERIC:
         if get(f) and dec(get(f)) is None:
-            gap(f, "csv-number-format", "Use a plain number with the digits 0-9 and a dot: no commas, % or currency signs")
+            gap(f, "csv-number-format", "Use a plain number of up to 30 digits, with the digits 0-9 and a dot: no commas, % or currency signs")
         elif get(f) and dec(get(f)) < 0:
             gap(f, "BR-KSA-F-04", "Amounts and quantities must be positive; credit notes carry positive amounts too")
     for f, rule in TWO_DECIMALS.items():
         if dec(get(f)) is not None and places(get(f)) > 2:
             gap(f, rule, "Use at most 2 decimal places")
     for f, n in MAX_CHARS.items():
-        if len(get(f)) > n:
-            gap(f, "BR-KSA-F-06", f"At most {n} characters")
+        if len(get(f)) > n:  # the length, not the text: long cells are where stray text hides
+            gap(f, "BR-KSA-F-06", f"At most {n} characters", value=f"({len(get(f))} characters)")
 
     # Dates and times
     for f in ("issue_date", "supply_date", "supply_end_date"):
@@ -234,7 +261,7 @@ def check_row(r, cols):
                 gap(f, "BR-KSA-10", "Tax invoices and their notes need the buyer street, city and country")
         if not get("buyer_vat") and not get("buyer_id"):
             gap("buyer_id", "BR-KSA-81", "Tax invoices need the buyer VAT number or another buyer ID (such as CRN or NAT)")
-    if get("buyer_country") == "SA":
+    if country(get("buyer_country")) == "SA":
         for f in BUYER_SA_ADDRESS:
             if not get(f):
                 gap(f, "BR-KSA-63", "Saudi buyers need street, building number, postal code, city, district and country")
@@ -316,7 +343,8 @@ def norm(f, v):
 
 
 def check_invoices(rows):
-    """Per-invoice checks: header fields that differ between lines, VAT breakdown, totals and warnings."""
+    """Per-invoice checks: header fields that differ between lines, lines that share an id, VAT breakdown, totals
+    and warnings."""
     gaps, warnings, by_inv, uuids = [], [], defaultdict(list), defaultdict(dict)
     for r in rows:
         by_inv[inv(r)].append(r)
@@ -326,6 +354,18 @@ def check_invoices(rows):
             if len(seen) > 1:
                 gaps.append({"invoice": i, "line": "", "field": f, "value": " | ".join(str(k) or "(blank)" for k in seen),
                              "rule": "csv-header-mismatch", "fix": f"Lines of one invoice must agree on {f}"})
+        ids = defaultdict(int)
+        for x in lines:
+            ids[(x.get("line_id") or "").strip()] += 1
+        for lid, n in ids.items():
+            if lid and n > 1:
+                gaps.append({"invoice": i, "line": lid, "field": "line_id", "value": lid, "rule": "csv-duplicate-line",
+                             "fix": f"{n} lines of this invoice share one line id; give each line its own id, or remove the repeated line"})
+        odd = [x for x in lines if (x.get("vat_category") or "").strip() == "S" and dec(x.get("vat_rate")) not in (None, Decimal(15))]
+        if odd:
+            warnings.append({"invoice": i, "field": "vat_rate", "rule": "csv-s-rate",
+                             "note": "Standard-rated (S) line with a rate other than 15. Saudi VAT is 15% today, but no ZATCA "
+                                     "e-invoicing rule fixes the rate, so this is not a gap. Confirm the rate"})
         r = lines[0]
         u = (r.get("uuid") or "").strip()
         if u:
@@ -399,9 +439,14 @@ def check_totals(i, r, lines, breakdown):
 
 def mask(v):
     v = str(v)
-    if v == "(blank)":
+    if v == "(blank)" or re.fullmatch(r"\([0-9]+ characters\)", v):  # a length (BR-KSA-F-06), not the text
         return v
     return "*" * max(len(v) - 4, 0) + v[-4:] if len(v) > 4 else "*" * len(v)
+
+
+def tidy(d):
+    """Echoed values cut to 60 characters, so a cell cannot fill the output."""
+    return {**d, **{k: clip(d[k]) for k in ("invoice", "line", "value", "field") if k in d}}
 
 
 def summary(out):
@@ -418,9 +463,10 @@ def summary(out):
     return "\n".join(text)
 
 
-def collapse_missing(gaps, cols):
+def collapse_missing(gaps, cols, unknown=()):
     """A column absent from the file gets one gap per rule, with "(all)" for the invoice, not one gap per invoice.
-    Gaps on cells that are there but blank or wrong stay per invoice."""
+    Gaps on cells that are there but blank or wrong stay per invoice. When an unrecognised column looks like the
+    missing one, the fix names it."""
     seen, out = {}, []
     for g in gaps:
         if g["field"] in cols:
@@ -428,7 +474,9 @@ def collapse_missing(gaps, cols):
         elif (g["field"], g["rule"]) not in seen:
             seen[(g["field"], g["rule"])] = True
             fix = "" if g["fix"] == f"{g['field']} is empty" else ". " + g["fix"]
-            out.append({**g, "invoice": "(all)", "line": "", "value": "", "fix": "column missing from the file" + fix})
+            near = difflib.get_close_matches(g["field"], list(unknown), n=1)
+            hint = f' (the file has a column "{clip(near[0])}" the check does not know; rename it if it holds this)' if near else ""
+            out.append({**g, "invoice": "(all)", "line": "", "value": "", "fix": "column missing from the file" + hint + fix})
     return out
 
 
@@ -446,45 +494,82 @@ def dedupe(gaps):
     return out
 
 
+def bucket(v, ok):
+    """A coverage key: the code when it is a known one, else "(other)", so no free text reaches the output."""
+    v = (v or "").strip()
+    return "(blank)" if not v else v if ok(v) else "(other)"
+
+
 def coverage(rows):
     c = {k: defaultdict(int) for k in ("type_code", "subtype", "vat_category", "currency", "export")}
     first = {}
     for r in rows:
         first.setdefault(inv(r), r)
-        c["vat_category"][(r.get("vat_category") or "").strip() or "(blank)"] += 1
+        c["vat_category"][bucket(r.get("vat_category"), lambda v: v in VAT_CATEGORIES)] += 1
     for r in first.values():
         fl = flags(r)
-        c["type_code"][(r.get("type_code") or "").strip() or "(blank)"] += 1
+        c["type_code"][bucket(r.get("type_code"), lambda v: v in TYPE_CODES)] += 1
         c["subtype"][fl["subtype"] if fl else "(blank or invalid)"] += 1
-        c["currency"][(r.get("currency") or "").strip().upper() or "(blank)"] += 1
+        c["currency"][bucket(r.get("currency"), CURRENCY.match)] += 1
         c["export"]["yes" if fl and fl["export"] else "no"] += 1
     return {"invoices_by_type_code": dict(c["type_code"]), "invoices_by_subtype": dict(c["subtype"]),
             "lines_by_vat_category": dict(c["vat_category"]), "invoices_by_currency": dict(c["currency"]),
             "not_in_sample": [n for n, has in SCENARIOS if not has(c)]}
 
 
+def header_name(n):
+    """A header cell as a column name: invisible characters dropped, trimmed, lowercase, spaces and hyphens as _."""
+    s = "".join(ch for ch in (n or "") if not (unicodedata.category(ch) in ("Cf", "Co", "Cn")
+                                               or (unicodedata.category(ch) == "Cc" and not ch.isspace())))
+    return re.sub(r"[\s\-]+", "_", s.strip().lower()).strip("_")
+
+
+def read_input(path, limit=MAX_INPUT):
+    """The bytes of a regular file of at most 200 MB. Links, folders, pipes and devices are refused."""
+    if os.path.islink(path):
+        raise ValueError("it is a symbolic link; point the check at the file itself")
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            raise ValueError("it is a symbolic link; point the check at the file itself")
+        raise
+    with os.fdopen(fd, "rb") as fh:
+        st = os.fstat(fh.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("it is not a regular file (it is a folder, pipe or device)")
+        if st.st_size > limit:
+            raise ValueError(f"it is larger than {limit // 2 ** 20} MB; check a smaller sample")
+        data = fh.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(f"it is larger than {limit // 2 ** 20} MB; check a smaller sample")
+    return data
+
+
 def load(path):
     # cp1256 (Arabic Windows) decodes any bytes, so it is the last try; save other files as UTF-8.
-    with open(path, "rb") as fh:
-        utf16 = fh.read(2) in (b"\xff\xfe", b"\xfe\xff")
-    for enc in ("utf-16",) if utf16 else ("utf-8-sig", "cp1256"):
+    data = read_input(path)
+    for enc in ("utf-16",) if data[:2] in (b"\xff\xfe", b"\xfe\xff") else ("utf-8-sig", "cp1256"):
         try:
-            with open(path, newline="", encoding=enc) as fh:
-                reader = csv.DictReader(fh)
-                names = [k for k in ((n or "").strip().lower() for n in reader.fieldnames or []) if k]
-                twice = sorted({k for k in names if names.count(k) > 1})
-                if twice:
-                    raise ValueError(f"these columns appear twice (headers ignore case and spaces): {', '.join(twice)}")
-                rows = []
-                for i, raw in enumerate(reader, start=2):
-                    if not any(isinstance(v, str) and v.strip() for v in raw.values()):
-                        continue  # a row of empty cells (",,,")
-                    row = {k.strip().lower(): (v if isinstance(v, str) else "") for k, v in raw.items() if (k or "").strip()}
-                    row["_row"] = i
-                    rows.append(row)
-                return rows, enc, names
+            content = data.decode(enc)
         except UnicodeError:
             continue
+        records = [(n, x) for n, x in enumerate(csv.reader(io.StringIO(content, newline="")), start=1)
+                   if any(c.strip() for c in x)]  # a row of empty cells (",,,") is skipped
+        if not records:
+            return [], enc, []
+        names = [header_name(c) for c in records[0][1]]
+        filled = [k for k in names if k]
+        twice = sorted({k for k in filled if filled.count(k) > 1})
+        if twice:
+            raise ValueError("these columns appear twice (headers ignore case, spaces, hyphens and invisible characters): "
+                             + ", ".join(clip(k) for k in twice))
+        rows = []
+        for n, values in records[1:]:
+            row = {k: (values[j] if j < len(values) else "") for j, k in enumerate(names) if k}
+            row["_row"] = n
+            rows.append(row)
+        return rows, enc, filled
     raise ValueError("could not read the file's text encoding")
 
 
@@ -493,39 +578,47 @@ def main(argv):
                                  description="Saudi (ZATCA) e-invoice data pre-check. Reads a CSV of invoice lines.")
     ap.add_argument("path", help="CSV of invoice lines")
     ap.add_argument("--all", action="store_true", help=f"list every gap, not only the first {SHOWN}")
-    ap.add_argument("--mask", action="store_true", help="hide all but the last 4 characters of VAT numbers and other IDs")
+    ap.add_argument("--unmask", action="store_true", help="show VAT numbers, IDs, names and streets in full (masked by default)")
+    ap.add_argument("--mask", action="store_true", help="accepted for older commands; masking is now the default")
     ap.add_argument("--summary", action="store_true", help="print a short text summary instead of JSON")
     a = ap.parse_args(argv[1:])
+    masked = not a.unmask
     try:
         rows, enc, cols = load(a.path)
     except (OSError, ValueError, csv.Error) as e:
-        print(f"could not check {a.path}: {e}", file=sys.stderr)
+        print(f"could not check {clip(a.path)}: {e.strerror if isinstance(e, OSError) and e.strerror else e}", file=sys.stderr)
         return 2
     if not rows:
-        print(f"{a.path} has no invoice lines, so nothing was checked", file=sys.stderr)
+        print(f"{clip(a.path)} has no invoice lines, so nothing was checked", file=sys.stderr)
         return 2
+    unknown = [c for c in cols if c not in KNOWN]
     inv_gaps, warnings = check_invoices(rows)
+    for c in reversed(unknown):
+        near = difflib.get_close_matches(c, KNOWN, n=1)
+        warnings.insert(0, {"invoice": "(all)", "field": c, "rule": "csv-unknown-column",
+                            "note": "The check does not read this column" + (f"; did you mean {near[0]}?" if near else "")})
     gaps = dedupe([g for r in rows for g in check_row(r, cols)]) + inv_gaps
     invoices_by_rule = defaultdict(dict)
     for g in gaps:  # counted before collapse_missing, so "(all)" gaps still count every invoice they hit
         invoices_by_rule[g["rule"]][g["invoice"]] = True
     with_gaps = len({g["invoice"] for g in gaps})
-    gaps = collapse_missing(gaps, cols)
+    gaps = collapse_missing(gaps, cols, unknown)
     by_rule = defaultdict(int)
     for g in gaps:
         by_rule[g["rule"]] += 1
     invoices = {inv(r) for r in rows}
     shown = gaps if a.all else gaps[:SHOWN]
-    if a.mask:
+    if masked:
         shown = [{**g, "value": " | ".join(mask(x) for x in str(g["value"]).split(" | "))} if g["field"] in MASKED else g
                  for g in shown]
+    shown = [tidy(g) for g in shown]
     out = {
-        "file_encoding": enc, "lines": len(rows), "invoices": len(invoices),
+        "file_encoding": enc, "masked": masked, "lines": len(rows), "invoices": len(invoices),
         "invoices_with_gaps": with_gaps,
         "gaps_total": len(gaps), "gaps_shown": len(shown), "truncated": len(shown) < len(gaps),
         "by_rule": [{"rule": k, "gaps": v, "invoices": len(invoices_by_rule[k])}
                     for k, v in sorted(by_rule.items(), key=lambda kv: -kv[1])],
-        "coverage": coverage(rows), "warnings": warnings,
+        "coverage": coverage(rows), "warnings": [tidy(w) for w in warnings],
         "phase2_columns_missing": [c for c in PHASE2 if c not in cols],
         "not_checked": NOT_CHECKED,
         "gaps": shown}
@@ -533,5 +626,15 @@ def main(argv):
     return 1 if gaps else 0
 
 
+def run(argv):
+    """main, with any unexpected error turned into a fixed message (no values from the file) and exit 2."""
+    try:
+        return main(argv)
+    except Exception:
+        print("the check stopped on an unexpected error; nothing from the file is shown. Save the file again or check a smaller sample",
+              file=sys.stderr)
+        return 2
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(run(sys.argv))

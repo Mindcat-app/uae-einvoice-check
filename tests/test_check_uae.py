@@ -72,7 +72,8 @@ class CheckUae(unittest.TestCase):
         self.assertIn("ibr-167-ae", rules(vat_category="E", vat_rate="", line_vat=""))
         self.assertEqual(rules(vat_category="E", vat_rate="", line_vat="", exemption_reason="VATEX-AE-EXEMPT"), [])
         self.assertIn("aligned-ibrp-o-05", rules(vat_category="O", vat_rate="0", line_vat=""))
-        self.assertEqual(rules(vat_category="O", vat_rate="", line_vat=""), [])
+        self.assertEqual(rules(vat_category="O", vat_rate="", line_vat="0"), [])
+        self.assertEqual(rules(vat_category="O", vat_rate="", line_vat=""), ["ibr-104-ae"])  # only E lines may leave it out
         self.assertIn("ibr-111-ae", rules(vat_category="N", vat_rate="0", line_vat="0"))
         self.assertIn("ibr-139-ae", rules(vat_category="s"))
 
@@ -119,7 +120,8 @@ class CheckUae(unittest.TestCase):
 
     def test_totals_with_blank_line_vat(self):
         totals = {"invoice_total_net": "200", "invoice_total_vat": "10", "invoice_total_gross": "210"}
-        self.assertEqual(rules(line_vat="", **totals), [])  # unknown line VAT: no total check, not a false gap
+        # unknown line VAT: no total check, not a false total gap; but ibr-104-ae asks for it on every non-E line
+        self.assertEqual(rules(line_vat="", **totals), ["ibr-104-ae"])
         exempt = {**CLEAN, "line_id": "2", "vat_category": "E", "vat_rate": "", "line_vat": "", "exemption_reason": "VATEX-AE-EXEMPT"}
         both = {**totals, "invoice_total_net": "400", "invoice_total_gross": "410"}
         code, out = run([{**CLEAN, **both}, {**exempt, **both}])
@@ -195,8 +197,11 @@ class CheckUae(unittest.TestCase):
         self.assertEqual(sorted(g["field"] for g in out["gaps"] if g["rule"] == "mc-header-mismatch"), ["issue_date", "seller_name"])
         # Same value written differently is not a mismatch
         usd = {**CLEAN, "currency": "USD", "exchange_rate": "3.6725", "line_net_aed": "734.50"}
-        code, out = run([usd, {**usd, "line_id": "2", "currency": "usd", "exchange_rate": "3.67250"}])
+        code, out = run([usd, {**usd, "line_id": "2", "exchange_rate": "3.67250"}])
         self.assertEqual(code, 0)
+        # Lowercase is not a mismatch, but it is not an ISO code either
+        code, out = run([usd, {**usd, "line_id": "2", "currency": "usd"}])
+        self.assertEqual(sorted(g["rule"] for g in out["gaps"]), ["ibr-cl-04"])
 
     def test_coverage_and_warnings(self):
         code, out = run([CLEAN, {**CLEAN, "invoice_number": "INV-2", "buyer_trn": ""}])
