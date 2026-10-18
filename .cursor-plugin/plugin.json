@@ -1,6 +1,6 @@
 {
   "name": "mindcat-einvoice-check",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Checks invoice data from Salesforce or an ERP export against UAE (PINT AE) and Saudi (ZATCA) e-invoicing rules (tax numbers, emirate and address codes, VAT categories and maths, credit notes, currency, transaction codes) and lists the gaps. It never signs, sends or submits invoices.",
   "author": {
     "name": "Mindcat",
