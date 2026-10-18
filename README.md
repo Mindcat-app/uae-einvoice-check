@@ -23,13 +23,17 @@ UAE finance teams in the second wave (revenue under AED 50m: appoint an accredit
 ```
 
 ## What it runs, sends and fetches
-- **Two local check engines**, Python standard library only: `engine/check_uae.py` (UAE, PINT AE) and `engine/check_ksa.py` (Saudi Arabia, ZATCA). Each reads the file the user points at and prints the gaps. Neither makes network calls. The UAE engine writes files only when asked: `--report` and `--handoff` write to the path you give. The Saudi engine writes nothing.
+- **Two local check engines**, Python standard library only: `engine/check_uae.py` (UAE, PINT AE) and `engine/check_ksa.py` (Saudi Arabia, ZATCA). Each reads the file the user points at and prints the gaps. Neither makes network calls. The UAE engine writes files only when asked: `--report` and `--handoff` create new files at the path you give and never replace an existing file. The Saudi engine writes nothing.
 - **Salesforce reads** (optional) through the user's own read-only SOQL tools, to build the sample. `einvoice-from-salesforce` needs your own Salesforce CLI (`sf`) or a Salesforce MCP tool, signed in to your org; the plugin ships neither.
 - **Nothing is sent to Mindcat.** There is no hosted server yet and no telemetry.
 - **No hooks.** The plugin adds no hooks, so it never runs on your other commands or tools. It stays read-only towards your systems: the engine has no network code, it writes only the report files you ask for, and its skills only read; for Salesforce, sign in as a read-only user. Salesforce fix suggestions are text for your admin; the plugin never deploys them.
 
 ## Data handling
-The invoice data you check (customer names, TRNs, addresses, amounts) is read on your machine and passes through your AI client's conversation, so it goes to your AI provider under that client's own data terms. The check's output does too; run it with `--mask` to hide all but the last 4 characters of TRNs, TINs and endpoint ids (the Saudi check: VAT numbers and other IDs). Any file the plugin writes stays on your disk; the `--handoff` pack holds no names, invoice numbers, TRNs or amounts. Mindcat receives nothing.
+Anything Claude itself reads goes to your AI provider unmasked, under your AI client's own data terms: the header row and few sample rows it reads to map columns, and any Salesforce results it sees. The skills limit this to the header row and at most 5 rows of a file.
+
+The check's output goes to your AI provider too, and it is **masked by default**: TRNs, TINs, endpoint ids and party names (the Saudi check: VAT numbers, IDs, names and streets) show only their last 4 characters, and long cell text is cut to 60 characters. `--unmask` shows them in full. Any file the plugin writes stays on your disk; the `--handoff` pack holds no names, invoice numbers, TRNs or amounts. Mindcat receives nothing.
+
+Invoice cells, file contents and Salesforce records are treated as data, never as instructions: the skills take the verdict only from the engine's exit code and `by_rule`.
 
 Needs Python 3 (standard library only).
 
@@ -39,41 +43,45 @@ Checks marked `ibr-...` or `aligned-...` mirror rules in the official PINT AE v1
 ## Inputs
 - **CSV** with the columns below (one row per invoice line).
 - **Excel .xlsx**, first sheet, same columns. Cell text is read as Excel stored it, and `issue_date` cells stored as Excel dates become `YYYY-MM-DD`. Format `transaction_type`, endpoint and code columns as text, or Excel drops their leading zeros.
-- **PINT AE UBL XML**: one invoice or credit note, or a folder of them. Fields are read from the XML (for example `cbc:ProfileExecutionID` for `transaction_type`, `cac:ItemPriceExtension` for the line VAT and amount payable). An invoice number used in more than one file is flagged.
+- **PINT AE UBL XML**: one invoice or credit note, or a folder of them. Fields are read from the XML (for example `cbc:ProfileExecutionID` for `transaction_type`, `cac:ItemPriceExtension` for the line VAT and amount payable). An invoice number used in more than one file is flagged. In a folder, a file that is not a regular file (`mc-xml-skipped`), is not an Invoice or CreditNote (`mc-xml-root`) or has no lines (`mc-xml-no-lines`) is a gap, and `files_read` gives the number of files read. XML with a DOCTYPE is refused.
+- Inputs must be regular files of at most 200 MB: links, pipes and devices are refused.
 - **Master data** with `--master customers` or `--master items`: a CSV or .xlsx list of customers (`customer_name`, `country`, `trn`, `tin`, `emirate`) or items (`item_name`, `item_kind`, `hs_code`, `sac_code`, `unit_code`, `vat_category`), checked with the same rules as invoice lines.
 
 ## CSV columns
-One row per invoice line. Header names ignore case and surrounding spaces; a column that appears twice stops the check.
+One row per invoice line. Header names ignore case, surrounding spaces and invisible characters, and read spaces and hyphens as `_`, so "Buyer TRN" is `buyer_trn`. A column that appears twice stops the check. A column the check does not read is a warning (`mc-unknown-column`) that names the closest known column, and a missing required column says when an unknown column looks like it.
 
 | Column | What |
 | --- | --- |
-| `invoice_number`, `issue_date`, `type_code`, `currency`, `exchange_rate` | Invoice header. `issue_date` is `YYYY-MM-DD`. `type_code` is 380 or 480 (invoice), 381 or 81 (credit note). `exchange_rate` is AED per 1 unit of the invoice currency (for USD, about 3.6725) |
+| `invoice_number`, `issue_date`, `type_code`, `currency`, `exchange_rate` | Invoice header. `issue_date` is `YYYY-MM-DD`. `type_code` is 380 or 480 (invoice), 381 or 81 (credit note). `currency` is a 3-letter ISO code in capitals (`ibr-cl-04`). `exchange_rate` is AED per 1 unit of the invoice currency (for USD, about 3.6725) |
 | `transaction_type` | BTAE-02: 8 flags of 0 or 1, in this order: free trade zone, deemed supply, margin scheme, summary invoice, continuous supply, disclosed agent billing, e-commerce, exports. `00000000` for none |
-| `seller_name`, `seller_trn`, `seller_tin`, `seller_country`, `seller_emirate` | Seller. Emirate is AUH, DXB, SHJ, UAQ, FUJ, AJM or RAK |
+| `seller_name`, `seller_trn`, `seller_tin`, `seller_country`, `seller_emirate` | Seller. Emirate is AUH, DXB, SHJ, UAQ, FUJ, AJM or RAK. Countries are 2-letter ISO codes in capitals (`ibr-cl-14`); UAE or United Arab Emirates still gets the UAE checks, plus that gap |
 | `seller_endpoint`, `seller_endpoint_scheme` | Seller's Peppol electronic address and its scheme (0235 in the UAE) |
 | `buyer_name`, `buyer_trn`, `buyer_country`, `buyer_emirate` | Buyer |
 | `buyer_endpoint`, `buyer_endpoint_scheme` | Buyer's Peppol electronic address and scheme. Your provider can tell you the predefined addresses for buyers outside Peppol, such as exports |
 | `preceding_invoice`, `credit_reason` | Credit notes: the original invoice number and the reason code (DL8.61.1.A to DL8.61.1.E, or VD) |
 | `line_id`, `item_name`, `item_kind`, `hs_code`, `sac_code` | Line and item. `item_kind` is goods, service or both |
 | `quantity`, `unit_code`, `unit_price`, `base_quantity`, `line_allowance`, `line_charge`, `line_net`, `line_net_aed` | Amounts. `unit_code` is a UN/ECE Rec 20 code in capitals, such as EA, HUR, DAY, MON or KGM. `line_net_aed` is `line_net` x `exchange_rate` |
-| `vat_category`, `vat_rate`, `line_vat`, `exemption_reason` | VAT. Category is S, Z, E, O, AE or N |
+| `vat_category`, `vat_rate`, `line_vat`, `exemption_reason` | VAT. Category is S, Z, E, O, AE or N. `line_vat` (BTAE-08) is needed on every line except exempt (E) ones (`ibr-104-ae`); write 0 when there is none |
 | `invoice_total_net`, `invoice_total_vat`, `invoice_total_gross` | Optional. When present, each is checked once per invoice against the sum of `line_net`, the sum of `line_vat`, and the two added together |
 
-Invoice-level columns must be the same on every line of an invoice; a gap in one is reported once per invoice. If they are filled on an invoice's first line only, later blank cells are read from that line; every line still needs the invoice number. Numbers are plain digits and a dot. Rows with only empty cells are skipped. Save the file as UTF-8 (UTF-16 with a byte order mark is read too). Other files are read as Arabic Windows (cp1256) when they hold Arabic words and as Western Windows (cp1252) otherwise; the output names the encoding used.
+Invoice-level columns must be the same on every line of an invoice; a gap in one is reported once per invoice. Two lines of one invoice with the same `line_id` are a gap (`mc-duplicate-line`). If they are filled on an invoice's first line only, later blank cells are read from that line; every line still needs the invoice number. Numbers are plain digits and a dot, at most 30 digits. Rows with only empty cells are skipped. Save the file as UTF-8 (UTF-16 with a byte order mark is read too). Other files are read as Arabic Windows (cp1256) when they hold Arabic words and as Western Windows (cp1252) otherwise; the output names the encoding used.
 
 ## Output
-JSON with the gaps (grouped in `by_rule`), `coverage` (invoices by type and currency, lines by VAT category, and `not_in_sample`: common cases such as credit notes, zero-rated, exempt, reverse charge or foreign currency that the sample has none of) and `warnings`, which are worth a look but are not counted as gaps. A required column that is missing from the file entirely is one gap for the whole file, with invoice `(all)` and the fix "column missing from the file"; `by_rule` still counts every invoice it affects. A cell that is there but blank or wrong is a gap on its invoice. Exit 0 means no gaps, 1 gaps, 2 the file could not be checked.
+JSON with the gaps (grouped in `by_rule`), `coverage` (invoices by type and currency, lines by VAT category, and `not_in_sample`: common cases such as credit notes, zero-rated, exempt, reverse charge or foreign currency that the sample has none of) and `warnings`, which are worth a look but are not counted as gaps (for example a negative line amount on an invoice, `mc-negative-line`). Coverage shows only known codes; anything else is counted as `(other)`. A required column that is missing from the file entirely is one gap for the whole file, with invoice `(all)` and the fix "column missing from the file"; `by_rule` still counts every invoice it affects. A cell that is there but blank or wrong is a gap on its invoice. Exit 0 means no gaps, 1 gaps, 2 the file could not be checked.
 
 Options (`--help` lists them; a mistyped option stops with exit 2, in both engines):
 
 | Option | What |
 | --- | --- |
 | `--all` | List every gap in the output; the default shows the first 50. Totals always count every gap |
-| `--mask` | Hide all but the last 4 characters of TRNs, TINs and endpoint ids (UAE endpoint ids hold the TIN), in the output and in `--report` |
+| `--unmask` | Show TRNs, TINs, endpoint ids and party names in full. By default the output and `--report` show only their last 4 characters (UAE endpoint ids hold the TIN) |
+| `--mask` | Accepted for older commands; masking is now the default |
 | `--summary` | Print a short text summary instead of JSON |
 | `--master customers` / `--master items` | Check a customer or item list instead of invoices |
-| `--report gaps.csv` | Also write every gap to a CSV, one row per gap, with empty owner and status columns to assign fixes |
-| `--handoff folder` | Also write `field-map.md` (each column and the PINT AE id it feeds) and `readiness.md` (gap counts by rule and sample coverage) for your provider, with no names, invoice numbers, TRNs or amounts |
+| `--report gaps.csv` | Also write every gap to a new `.csv` file, one row per gap, with empty owner and status columns to assign fixes. Every cell is quoted, and a cell starting with `=`, `+`, `-` or `@` gets a leading `'` so a spreadsheet does not run it |
+| `--handoff folder` | Also write `field-map.md` (each column and the PINT AE id it feeds) and `readiness.md` (gap counts by rule and sample coverage) for your provider, with no names, invoice numbers, TRNs or amounts. The folder must be new or hold neither file; only the last level is created |
+
+`--report` and `--handoff` never replace a file, never follow a link, and never write inside an XML folder being checked.
 
 Sample report (`python3 -I engine/check_uae.py samples/uae-sample.csv --summary`):
 ```
@@ -122,7 +130,7 @@ To run the check by hand: `python3 -I engine/check_uae.py samples/uae-sample.csv
 - **Does Mindcat see my data?** No. The check runs on your machine; see [PRIVACY.md](PRIVACY.md).
 
 ## Troubleshooting
-- **Exit code 2:** the file could not be checked. The message says why: no lines, a column that appears twice, an unknown option, a file that could not be read, or `--report` naming the file being checked.
+- **Exit code 2:** the file could not be checked. The message says why: no lines, a column that appears twice, an unknown option, a file that could not be read (a link, pipe or device, over 200 MB, or XML with a DOCTYPE), or a `--report` or `--handoff` target that already exists, is not `.csv`, or sits inside the folder being checked.
 - **`ibr-154-ae` or `ibr-cl-25` on every invoice from Excel:** Excel turned `00000000` into `0` or `0235` into `235`. Format those columns as text.
 - **Odd characters in names:** save the file as UTF-8. `file_encoding` in the output shows how it was read.
 - **Many `mc-number-format` gaps:** Excel often writes numbers as `1,000` or `5%`. Format the columns as plain numbers with no thousands separator before saving as CSV.
@@ -134,4 +142,4 @@ To run the check by hand: `python3 -I engine/check_uae.py samples/uae-sample.csv
 - Privacy policy: [PRIVACY.md](PRIVACY.md). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Status
-Version 0.2.0. Checks UAE invoices against the PINT AE v1.0.4 rules and pre-checks Saudi invoice data against the ZATCA XML Implementation Standard v1.2. Tested with unit tests and the sample invoices in `samples/`.
+Version 0.2.1. Checks UAE invoices against the PINT AE v1.0.4 rules and pre-checks Saudi invoice data against the ZATCA XML Implementation Standard v1.2. Tested with unit tests and the sample invoices in `samples/`.
